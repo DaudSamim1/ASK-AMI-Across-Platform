@@ -5,3 +5,4 @@ PyJWT==2.6.0
 pinecone
 openai
 numpy
+python-dotenv
