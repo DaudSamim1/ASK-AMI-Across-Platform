@@ -1,0 +1,7 @@
+flask
+flasgger
+requests
+PyJWT==2.6.0
+pinecone
+openai
+numpy
