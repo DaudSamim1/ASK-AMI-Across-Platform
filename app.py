@@ -7,9 +7,9 @@ import uuid
 import numpy as np
 from openai import OpenAI
 from pinecone import Pinecone, ServerlessSpec
-from enum import Enum
 import os
 from dotenv import load_dotenv
+import re
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,12 +33,6 @@ items = [
     {"id": 1, "name": "Item 1", "description": "This is item 1"},
     {"id": 2, "name": "Item 2", "description": "This is item 2"},
 ]
-
-
-class SummaryCategory(Enum):
-    ADMISSION = "admission"
-    CONTRADICTION = "contradiction"
-    HIGH_LEVEL_SUMMARY = "high_level_summary"
 
 
 def generate_token():
@@ -70,16 +64,26 @@ def generate_embedding(text, model="text-embedding-3-small"):
         return np.zeros(1536).tolist()  # Return a zero vector if embedding fails
 
 
-# Function to store deposition data in Pinecone
-def store_depositions_in_pinecone(deposition_data, depo_id):
+def camel_to_snake(name):
+    snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+    # Check if '_summary' already exists at the end
+    if not snake_case.endswith("_summary"):
+        snake_case += "_summary"
+
+    return snake_case
+
+
+# Function to store summary data in Pinecone
+def store_summaries_in_pinecone(summary_data, depo_id):
     try:
-        print(f"Starting Pinecone insertion for depoIQ_ID: {depo_id}")
+        print(f"🔹 Starting Pinecone insertion for depoIQ_ID: {depo_id}")
 
         # Initialize Pinecone
         pc = Pinecone(api_key=PINECONE_API_KEY)
 
         # Define index name
-        index_name = "depositions-index"
+        index_name = "summaries-index"
 
         # Create index if it doesn't exist
         if index_name not in pc.list_indexes().names():
@@ -87,9 +91,7 @@ def store_depositions_in_pinecone(deposition_data, depo_id):
                 name=index_name,
                 dimension=1536,  # OpenAI embedding dimension
                 metric="cosine",
-                spec=ServerlessSpec(
-                    cloud="aws", region="us-east-1"
-                ),  # Use supported region
+                spec=ServerlessSpec(cloud="aws", region="us-east-1"),
             )
 
         # Wait until the index is ready
@@ -98,30 +100,34 @@ def store_depositions_in_pinecone(deposition_data, depo_id):
 
         index = pc.Index(index_name)
 
-        # Check if deposition already exists
+        # Check if summary already exists
         dummy_vector = np.zeros(1536).tolist()
         existing_entries = index.query(
             vector=dummy_vector, filter={"depoIQ_ID": depo_id}, top_k=1
         )
 
         if existing_entries["matches"]:
-            print(f"Deposition {depo_id} already exists in Pinecone. Skipping insert.")
+            print(f"⚠️ Summary {depo_id} already exists in Pinecone. Skipping insert.")
             return {
                 "status": "skipped",
-                "message": "Deposition already exists in Pinecone.",
+                "message": f"Summary with depoIQ_ID {depo_id} already exists in Pinecone. No new data inserted.",
             }
 
-        # Insert depositions into Pinecone
+        # Insert summaries into Pinecone
         inserted_count = 0
         vectors_to_upsert = []
+        inserted_categories = []
 
-        for key, value in deposition_data["summary"].items():
+        for key, value in summary_data["summary"].items():
             text = value["text"]
             embedding = generate_embedding(text)
 
+            # Convert camelCase keys to snake_case
+            category = camel_to_snake(key)
+
             metadata = {
                 "depoIQ_ID": depo_id,
-                "category": SummaryCategory.HIGH_LEVEL_SUMMARY.value,
+                "category": category,
                 "summary_ID": "summary_" + depo_id,
             }
 
@@ -132,23 +138,30 @@ def store_depositions_in_pinecone(deposition_data, depo_id):
                     "metadata": metadata,  # Metadata
                 }
             )
+            inserted_categories.append(category)  # Keep track of inserted categories
 
         # Bulk upsert into Pinecone
         if vectors_to_upsert:
             index.upsert(vectors=vectors_to_upsert)
             inserted_count = len(vectors_to_upsert)
-            print(
-                f"Successfully inserted {inserted_count} deposition summaries into Pinecone."
-            )
+            print(f"✅ Successfully inserted {inserted_count} summaries into Pinecone.")
 
         return {
             "status": "success",
-            "message": f"Stored {inserted_count} depositions in Pinecone.",
+            "message": f"Successfully stored {inserted_count} summaries in Pinecone for depoIQ_ID {depo_id}.",
+            "data": {
+                "total_inserted": inserted_count,
+                "depoIQ_ID": depo_id,
+                "categories": inserted_categories,
+            },
         }
 
     except Exception as e:
-        print(f"Error inserting into Pinecone: {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"❌ Error inserting into Pinecone: {e}")
+        return {
+            "status": "error",
+            "message": f"An error occurred while storing summaries data: {str(e)}",
+        }
 
 
 # 🏠 Home Endpoint
@@ -157,14 +170,14 @@ def home():
     return jsonify({"message": "Welcome to the Python Project API!"})
 
 
-# Function to query Pinecone and match depositions
+# Function to query Pinecone and match summaries
 def query_pinecone(query_text, depo_id=None, top_k=3):
     try:
         print(f"Querying Pinecone for: {query_text} and depo_id: {depo_id}")
 
         # Initialize Pinecone
         pc = Pinecone(api_key=PINECONE_API_KEY)
-        index_name = "depositions-index"
+        index_name = "summaries-index"
         index = pc.Index(index_name)
 
         # Generate query embedding
@@ -201,15 +214,15 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         return {"status": "error", "message": str(e)}
 
 
-@app.route("/add-summary/<string:depoId>", methods=["GET"])
-def add_summary(depoId):
+@app.route("/add-summaries/<string:depoIQ_ID>", methods=["GET"])
+def add_summary(depoIQ_ID):
     """
     Get Summaries from Depo and store into pinecon
     ---
     tags:
       - Summary
     parameters:
-      - name: depoId
+      - name: depoIQ_ID
         in: path
         type: string
         required: true
@@ -257,7 +270,7 @@ def add_summary(depoId):
         """
 
         # Set request payload
-        payload = {"query": query, "variables": {"depoId": depoId}}
+        payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
 
         token = generate_token()
 
@@ -272,8 +285,8 @@ def add_summary(depoId):
 
         # Handle response
         if response.status_code == 200:
-            response = store_depositions_in_pinecone(
-                response.json()["data"]["getDepo"], depoId
+            response = store_summaries_in_pinecone(
+                response.json()["data"]["getDepo"], depoIQ_ID
             )
             print(response)
             # return jsonify(response.json()["data"]["getDepo"]), 200
