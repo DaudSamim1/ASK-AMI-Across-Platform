@@ -10,6 +10,7 @@ from pinecone import Pinecone, ServerlessSpec
 import os
 from dotenv import load_dotenv
 import re
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -118,17 +119,16 @@ def store_summaries_in_pinecone(summary_data, depo_id):
         vectors_to_upsert = []
         inserted_categories = []
 
-        for key, value in summary_data["summary"].items():
+        for key, value in summary_data.items():
             text = value["text"]
             embedding = generate_embedding(text)
-
             # Convert camelCase keys to snake_case
             category = camel_to_snake(key)
 
             metadata = {
                 "depoIQ_ID": depo_id,
                 "category": category,
-                "summary_ID": "summary_" + depo_id,
+                "summary_ID": f"{key}__{depo_id}",
             }
 
             vectors_to_upsert.append(
@@ -170,6 +170,49 @@ def home():
     return jsonify({"message": "Welcome to the Python Project API!"})
 
 
+# Function to generate a nearest relevant query based on the given reference text and user query.
+def generate_nearest_query(user_query, reference_text):
+    prompt = f"""
+    You are an AI assistant that extracts precise answers from a given document.
+    Your task is to provide the most accurate and structured response based on the context.
+
+    Context:
+    "{reference_text}"
+
+    User Question:
+    "{user_query}"
+
+    - If the exact answer is found, provide it concisely.
+    - If relevant information is available but not an exact match, summarize the key points.
+    - If there is no clear answer, state "The document does not provide specific details, but it discusses related topics such as [mention relevant details]."
+    - Do NOT simply return "No relevant details were provided" unless the document is completely unrelated.
+
+    Provide your response below:
+    """
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4",  # Use GPT-4 or another available model
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that refines queries based on a reference paragraph.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=100,
+        )
+
+        # Correct way to access the response
+        refined_query = response.choices[0].message.content.strip()
+        print(f"Refined query: {refined_query}")
+        return refined_query
+
+    except Exception as e:
+        return f"Error generating query: {str(e)}"
+
+
 # Function to query Pinecone and match summaries
 def query_pinecone(query_text, depo_id=None, top_k=3):
     try:
@@ -201,17 +244,178 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         for match in results["matches"]:
             matched_results.append(
                 {
-                    "score": match["score"],
+                    # "score": match["score"],
                     "category": match["metadata"]["category"],
                     "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
+                    "summary_ID": match["metadata"].get("summary_ID"),
                 }
             )
 
-        return {"query": query_text, "matches": matched_results}
+        depoSummary = getDepoSummary(depo_id)  # Fetch depo summary to get text
+
+        for i in range(
+            len(matched_results)
+        ):  # Add text to matched results from depo summary
+            key = matched_results[i]["summary_ID"].split("__")[0]
+            if key in depoSummary:
+                text_from_AI = generate_nearest_query(
+                    query_text, depoSummary[key]["text"]
+                )
+                matched_results[i]["content"] = depoSummary[key]["text"]
+                matched_results[i]["query_answer"] = text_from_AI
+                del matched_results[i]["summary_ID"]
+            else:
+                matched_results[i]["text"] = "No text found"
+
+        response = {"query": query_text, "matches": matched_results}
+
+        prompt = f"""
+                  You are an AI assistant that organizes and sorts JSON data efficiently.  
+                  Your task is to **analyze and sort the given data** based on relevance to the provided query.  
+
+                  ---
+
+                  ### **Given Data:**
+                  {response}
+
+                  ---
+
+                  ### **Instructions:**
+                  - You will receive a **JSON payload** containing:
+                    - A **query**
+                    - Multiple **matches**, each with a `query_answer` field.
+                  - **Your goal is to determine which `query_answer` is the best fit** for `query` and **sort the results accordingly**.
+                  - **Sort the results based on relevance**, ensuring the most accurate and precise response appears **first**.
+                  - **If two answers have similar relevance, prioritize the one with more detailed information.**
+                  - **DO NOT modify the structure of the JSON**.
+                  - **DO NOT change or analyze `query_answer` text**—only rank them based on relevance.
+
+                  ---
+
+                  ### **Sorting Criteria:**
+                  - **Highest Relevance:** The `query_answer` that directly and accurately responds to `query` should appear at the top.
+                  - **Medium Relevance:** Responses that partially answer the query but may lack specifics should be placed lower.
+                  - **Lowest Relevance:** If `query_answer` is vague, indirect, or missing critical details, place it at the bottom.
+                  - **If relevance is equal, prioritize the response that provides more details and context.**
+
+                  ---
+
+                  ### **Additional Formatting Rules:**
+                  - **Do NOT modify the JSON structure.** Return the same format as received.
+                  - **Ensure the JSON format remains unchanged**—simply reordering based on relevance.
+                  - **Retain all existing fields** without modification.
+                  """
+
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        ai_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that extracts precise answers from multiple given documents efficiently.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "query_response",
+                    "description": "A structured response for a query and its matched answers.",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "matches": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {"type": "string"},
+                                        "depoIQ_ID": {"type": "string"},
+                                        "query_answer": {"type": "string"},
+                                        "one_word_answer": {"type": "string"},
+                                    },
+                                    "required": [
+                                        "category",
+                                        "depoIQ_ID",
+                                        "query_answer",
+                                        "one_word_answer",
+                                    ],
+                                },
+                            },
+                        },
+                        "required": ["query", "matches"],
+                    },
+                },
+            },
+        )
+
+        # Convert response to JSON
+        ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
+
+        # Print formatted output
+        print(json.dumps(ai_json_response, indent=4))
+
+        return json.dumps(ai_json_response, indent=4)
 
     except Exception as e:
         print(f"Error querying Pinecone: {e}")
         return {"status": "error", "message": str(e)}
+
+
+def getDepoSummary(depoIQ_ID):
+    query = """
+    query GetDepoSummary($depoId: ID!) {
+      getDepo(depoId: $depoId) {
+        summary {
+          overview {
+            title
+            description
+            text
+          }
+          highLevelSummary {
+            title
+            description
+            text
+          }
+          detailedSummary {
+            title
+            description
+            text
+          }
+          topicalSummary {
+            title
+            description
+            text
+          }
+          visualization {
+            title
+            description
+            text
+          }
+        }
+      }
+    }
+    """
+
+    payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
+
+    token = generate_token()
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": token,
+    }
+
+    response = requests.post(GRAPHQL_URL, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        return response.json()["data"]["getDepo"]["summary"]
+    elif response.status_code == 401:
+        raise Exception("Unauthorized - Invalid Token")
+    else:
+        raise Exception(f"Failed to fetch depo data: {response.text}")
 
 
 @app.route("/add-summaries/<string:depoIQ_ID>", methods=["GET"])
@@ -234,70 +438,9 @@ def add_summary(depoIQ_ID):
         description: Internal server error
     """
     try:
-        # Define GraphQL query
-        query = """
-        query GetDepoSummary($depoId: ID!) {
-          getDepo(depoId: $depoId) {
-            summary {
-              overview {
-                title
-                description
-                text
-              }
-              highLevelSummary {
-                title
-                description
-                text
-              }
-              detailedSummary {
-                title
-                description
-                text
-              }
-              topicalSummary {
-                title
-                description
-                text
-              }
-              visualization {
-                title
-                description
-                text
-              }
-            }
-          }
-        }
-        """
-
-        # Set request payload
-        payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
-
-        token = generate_token()
-
-        # Set headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": token,
-        }
-
-        # Make request to GraphQL API
-        response = requests.post(GRAPHQL_URL, json=payload, headers=headers)
-
-        # Handle response
-        if response.status_code == 200:
-            response = store_summaries_in_pinecone(
-                response.json()["data"]["getDepo"], depoIQ_ID
-            )
-            print(response)
-            # return jsonify(response.json()["data"]["getDepo"]), 200
-            return jsonify(response), 200
-        elif response.status_code == 401:
-            return jsonify({"error": "Unauthorized - Invalid Token"}), 401
-        else:
-            return (
-                jsonify({"error": f"Failed to fetch depo data: {response.text}"}),
-                response.status_code,
-            )
+        depo_summary = getDepoSummary(depoIQ_ID)
+        response = store_summaries_in_pinecone(depo_summary, depoIQ_ID)
+        return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
@@ -338,7 +481,7 @@ def talk_summary():
 
         response = query_pinecone(user_query, depo_id, top_k=3)
 
-        return jsonify(response), 200
+        return response, 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
