@@ -6,3 +6,4 @@ pinecone
 openai
 numpy
 python-dotenv
+beautifulsoup4
