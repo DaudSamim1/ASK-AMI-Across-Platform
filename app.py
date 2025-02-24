@@ -163,6 +163,18 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         #     )
         #     matched_results[i]["query_answer"] = text_from_AI
 
+        # Format the matched results
+        matched_results = [
+            {
+                "category": match["metadata"]["category"],
+                "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
+                "sub_category": match["metadata"].get("sub_category", None),
+                "text": match["metadata"].get("text", "No text found"),
+            }
+            for match in results.get("matches", [])
+        ]
+
+        # Construct initial response
         response = {
             "answer_for_query": (
                 matched_results[0]["text"] if matched_results else "No answer found"
@@ -171,97 +183,99 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
             "metadata": matched_results,
         }
 
-        return json.dumps(response, indent=4)
+        # Define GPT prompt
+        prompt = f"""
+                    You are an AI assistant that organizes and sorts JSON data efficiently.
 
-        # prompt = f"""
-        #           You are an AI assistant that organizes and sorts JSON data efficiently.
-        #           Your task is to **analyze and sort the given data** based on relevance to the provided query.
+                    Your task is to **analyze and sort the given JSON data** based on its relevance to the `user_query`
+                    and return **only the top 3 most relevant results** while maintaining the original structure.
 
-        #           ---
+                    ---
 
-        #           ### **Given Data:**
-        #           {response}
+                    ### **Given Data:**
+                    {response}
 
-        #           ---
+                    ---
 
-        #           ### **Instructions:**
-        #           - You will receive a **JSON payload** containing:
-        #             - A **query**
-        #             - Multiple **matches**, each with a `query_answer` field.
-        #           - **Your goal is to determine which `query_answer` is the best fit** for `query` and **sort the results accordingly**.
-        #           - **Sort the results based on relevance**, ensuring the most accurate and precise response appears **first**.
-        #           - **If two answers have similar relevance, prioritize the one with more detailed information.**
-        #           - **DO NOT modify the structure of the JSON**.
-        #           - **DO NOT change or analyze `query_answer` text**—only rank them based on relevance.
+                    ### **Instructions:**
+                    - You will receive a **JSON payload** containing:
+                    - A **user_query**
+                    - Multiple **metadata entries**, each containing a `"text"` field.
+                    - **Your goal is to determine which `"text"` field best answers the `user_query` and rank the results accordingly.**
+                    - **Select the most relevant `"text"`** from `metadata` and place it **exactly as it appears** in `"answer_for_query"`.  
+                    - **Do NOT generate your own text.**
+                    - **Only copy the most relevant `text` from metadata.**
+                    - **Sort the top 3 most relevant results** in `"metadata"`, ensuring the best response is at the top.
+                    - **DO NOT modify the JSON structure**. The only allowed modifications are:
+                    - Assigning the most relevant `"text"` **exactly as it is** to `"answer_for_query"`.
+                    - Reordering the `"metadata"` array to prioritize relevance.
+                    - Ensuring only the **top 3 most relevant results** remain in `"metadata"`.
 
-        #           ---
+                    ---
 
-        #           ### **Sorting Criteria:**
-        #           - **Highest Relevance:** The `query_answer` that directly and accurately responds to `query` should appear at the top.
-        #           - **Medium Relevance:** Responses that partially answer the query but may lack specifics should be placed lower.
-        #           - **Lowest Relevance:** If `query_answer` is vague, indirect, or missing critical details, place it at the bottom.
-        #           - **If relevance is equal, prioritize the response that provides more details and context.**
+                    ### **Sorting Criteria:**
+                    - **Highest Relevance:** The `"text"` that directly and accurately answers the `"user_query"` should be placed in `"answer_for_query"`, without modifications.
+                    - **Top 3 Results:** The `"metadata"` array should contain only the **three** most relevant entries.
+                    - **If relevance is equal, prioritize the `"text"` that provides more details and context.**
+                    - **Do not include irrelevant, vague, or unrelated responses.**
+                    - **Do not summarize, rewrite, or alter any text. Return the original content as it is.**
 
-        #           ---
+                    ---
+                    """
 
-        #           ### **Additional Formatting Rules:**
-        #           - **Do NOT modify the JSON structure.** Return the same format as received.
-        #           - **Ensure the JSON format remains unchanged**—simply reordering based on relevance.
-        #           - **Retain all existing fields** without modification.
-        #           """
+        # Initialize OpenAI client
+        client = OpenAI(api_key=OPENAI_API_KEY)
 
-        # client = OpenAI(api_key=OPENAI_API_KEY)
-        # ai_response = client.chat.completions.create(
-        #     model="gpt-4o-mini",
-        #     messages=[
-        #         {
-        #             "role": "system",
-        #             "content": "You are an AI assistant that extracts precise answers from multiple given documents efficiently.",
-        #         },
-        #         {"role": "user", "content": prompt},
-        #     ],
-        #     max_tokens=1000,
-        #     response_format={
-        #         "type": "json_schema",
-        #         "json_schema": {
-        #             "name": "query_response",
-        #             "description": "A structured response for a query and its matched answers.",
-        #             "schema": {
-        #                 "type": "object",
-        #                 "properties": {
-        #                     "query": {"type": "string"},
-        #                     "matches": {
-        #                         "type": "array",
-        #                         "items": {
-        #                             "type": "object",
-        #                             "properties": {
-        #                                 "category": {"type": "string"},
-        #                                 "sub_category": {"type": "string"},
-        #                                 "depoIQ_ID": {"type": "string"},
-        #                                 "query_answer": {"type": "string"},
-        #                             },
-        #                             "required": [
-        #                                 "category",
-        #                                 "sub_category",
-        #                                 "depoIQ_ID",
-        #                                 "query_answer",
-        #                             ],
-        #                         },
-        #                     },
-        #                 },
-        #                 "required": ["query", "matches"],
-        #             },
-        #         },
-        #     },
-        # )
+        # Call GPT-4o-mini API
+        ai_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that extracts precise answers from multiple given documents efficiently.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "query_response",
+                    "description": "A structured response for a query and its matched answers.",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "answer_for_query": {"type": "string"},
+                            "user_query": {"type": "string"},
+                            "metadata": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {"type": "string"},
+                                        "sub_category": {"type": "string"},
+                                        "depoIQ_ID": {"type": "string"},
+                                        "text": {"type": "string"},
+                                    },
+                                    "required": [
+                                        "category",
+                                        "sub_category",
+                                        "depoIQ_ID",
+                                        "text",
+                                    ],
+                                },
+                            },
+                        },
+                        "required": ["answer_for_query", "user_query", "metadata"],
+                    },
+                },
+            },
+        )
 
-        # # Convert response to JSON
-        # ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
+        # Convert response to JSON
+        ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
 
-        # # Print formatted output
-        # print(json.dumps(ai_json_response, indent=4))
-
-        # return json.dumps(ai_json_response, indent=4)
+        return json.dumps(ai_json_response, indent=4)
 
     except Exception as e:
         print(f"Error querying Pinecone: {e}")
@@ -544,7 +558,7 @@ def talk_summary():
         if not depo_id or not user_query:
             return jsonify({"error": "Missing depo_id or user_query"}), 400
 
-        response = query_pinecone(user_query, depo_id, top_k=3)
+        response = query_pinecone(user_query, depo_id, top_k=8)
 
         return response, 200
 
