@@ -164,12 +164,14 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         #     matched_results[i]["query_answer"] = text_from_AI
 
         response = {
+            "answer_for_query": (
+                matched_results[0]["text"] if matched_results else "No answer found"
+            ),
             "user_query": query_text,
-            "answer_for_query": matched_results[0]["text"],
             "metadata": matched_results,
         }
 
-        return response
+        return json.dumps(response, indent=4)
 
         # prompt = f"""
         #           You are an AI assistant that organizes and sorts JSON data efficiently.
@@ -544,7 +546,7 @@ def talk_summary():
 
         response = query_pinecone(user_query, depo_id, top_k=3)
 
-        return jsonify(response), 200
+        return response, 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
