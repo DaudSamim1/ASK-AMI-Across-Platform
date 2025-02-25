@@ -412,7 +412,7 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
     skipped_chunks = []
 
     for chunk_index, chunk_value in enumerate(text_chunks):
-        sub_category = f"index__{chunk_index}__{category}"
+        sub_category = f"chunk__{chunk_index}"
 
         print(f"🔹 Processing chunk {chunk_index + 1} of {category}")
 
