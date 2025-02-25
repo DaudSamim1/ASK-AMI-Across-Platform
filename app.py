@@ -76,49 +76,6 @@ def camel_to_snake(name):
     return snake_case
 
 
-# Function to generate a nearest relevant query based on the given reference text and user query.
-def generate_nearest_query(user_query, reference_text):
-    prompt = f"""
-    You are an AI assistant that extracts precise answers from a given document.
-    Your task is to provide the most accurate and structured response based on the context.
-
-    Context:
-    "{reference_text}"
-
-    User Question:
-    "{user_query}"
-
-    - If the exact answer is found, provide it concisely.
-    - If relevant information is available but not an exact match, summarize the key points.
-    - If there is no clear answer, state "The document does not provide specific details, but it discusses related topics such as [mention relevant details]."
-    - Do NOT simply return "No relevant details were provided" unless the document is completely unrelated.
-
-    Provide your response below:
-    """
-
-    try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4",  # Use GPT-4 or another available model
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an AI assistant that refines queries based on a reference paragraph.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=100,
-        )
-
-        # Correct way to access the response
-        refined_query = response.choices[0].message.content.strip()
-        print(f"Refined query: {refined_query}")
-        return refined_query
-
-    except Exception as e:
-        return f"Error generating query: {str(e)}"
-
-
 # Function to query Pinecone and match summaries
 def query_pinecone(query_text, depo_id=None, top_k=3):
     try:
@@ -149,26 +106,16 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
                     # "score": match["score"],
                     "category": match["metadata"]["category"],
                     "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
-                    "sub_category": match["metadata"].get("sub_category", None),
+                    "chunk_index": match["metadata"].get("chunk_index", None),
                     "text": match["metadata"].get("text", "No text found"),
                 }
             )
 
-        # depoSummary = getDepoSummary(depo_id)  # Fetch depo summary to get text
-
-        # Add text to matched results from depo summary
-        # for i in range(len(matched_results)):
-        #     text_from_AI = generate_nearest_query(
-        #         query_text, matched_results[i]["text"]
-        #     )
-        #     matched_results[i]["query_answer"] = text_from_AI
-
-        # Format the matched results
         matched_results = [
             {
                 "category": match["metadata"]["category"],
                 "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
-                "sub_category": match["metadata"].get("sub_category", None),
+                "chunk_index": match["metadata"].get("chunk_index", None),
                 "text": match["metadata"].get("text", "No text found"),
             }
             for match in results.get("matches", [])
@@ -253,13 +200,13 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
                                     "type": "object",
                                     "properties": {
                                         "category": {"type": "string"},
-                                        "sub_category": {"type": "string"},
+                                        "chunk_index": {"type": "string"},
                                         "depoIQ_ID": {"type": "string"},
                                         "text": {"type": "string"},
                                     },
                                     "required": [
                                         "category",
-                                        "sub_category",
+                                        "chunk_index",
                                         "depoIQ_ID",
                                         "text",
                                     ],
@@ -387,14 +334,14 @@ def split_into_chunks(text):
 
 
 # Function to check if a summary already exists in Pinecone
-def check_existing_entry(depoIQ_ID, category, sub_category):
+def check_existing_entry(depoIQ_ID, category, chunk_index):
     """Checks if a summary already exists in Pinecone."""
     try:
         existing_entries = summariesIndex.query(
             vector=np.random.rand(1536).tolist(),  # Use a dummy query vector
             filter={
                 "depoIQ_ID": depoIQ_ID,
-                "sub_category": sub_category,
+                "chunk_index": chunk_index,
                 "category": category,
             },
             top_k=1,
@@ -412,32 +359,31 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
     skipped_chunks = []
 
     for chunk_index, chunk_value in enumerate(text_chunks):
-        sub_category = f"chunk__{chunk_index}"
 
         print(f"🔹 Processing chunk {chunk_index + 1} of {category}")
 
         if not chunk_value or not isinstance(chunk_value, str):
-            print(f"⚠️ Skipping invalid text chunk: {sub_category}")
+            print(f"⚠️ Skipping invalid text chunk: {chunk_index}")
             continue
 
         # Check if summary already exists
-        if check_existing_entry(depoIQ_ID, category, sub_category):
-            skipped_chunks.append(sub_category)
-            print(f"⚠️ Summary already exists: {sub_category}, skipping...")
+        if check_existing_entry(depoIQ_ID, category, chunk_index):
+            skipped_chunks.append(chunk_index)
+            print(f"⚠️ Summary already exists: {chunk_index}, skipping...")
             continue
 
         # Generate embedding
         embedding = generate_embedding(chunk_value)
 
         if not any(embedding):  # Check for all zero vectors
-            print(f"⚠️ Skipping zero-vector embedding for: {sub_category}")
+            print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}")
             continue
 
         # Metadata
         metadata = {
             "depoIQ_ID": depoIQ_ID,
             "category": category,
-            "sub_category": sub_category,
+            "chunk_index": chunk_index,
             "text": chunk_value,
         }
 
