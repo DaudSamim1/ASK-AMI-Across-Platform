@@ -66,14 +66,31 @@ def generate_embedding(text, model="text-embedding-3-small"):
         return np.zeros(1536).tolist()
 
 
+# Function to convert camelCase to snake_case
 def camel_to_snake(name):
     snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-
-    # Check if '_summary' already exists at the end
     if not snake_case.endswith("_summary"):
         snake_case += "_summary"
-
     return snake_case
+
+
+# snake to camel case and also remove _summary
+def snake_to_camel(name, isSummary=True):
+    if isSummary:
+        name = name.replace("_summary", "")
+    parts = name.split("_")
+    camel_case = parts[0] + "".join(word.capitalize() for word in parts[1:])
+    return camel_case
+
+
+# Function to group by depoIQ_ID for Pinecone results
+def group_by_depoIQ_ID(data):
+    grouped_data = {}
+    for entry in data:
+        depoIQ_ID = entry["depoIQ_ID"]
+        if depoIQ_ID not in grouped_data:
+            grouped_data[depoIQ_ID] = getDepoSummary(depoIQ_ID)
+    return grouped_data
 
 
 # Function to query Pinecone and match summaries
@@ -98,37 +115,59 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
             filter=filter_criteria,
         )
 
-        # Format the results
-        matched_results = []
-        for match in results["matches"]:
-            matched_results.append(
-                {
-                    # "score": match["score"],
-                    "category": match["metadata"]["category"],
-                    "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
-                    "chunk_index": match["metadata"].get("chunk_index", None),
-                    "text": match["metadata"].get("text", "No text found"),
-                }
-            )
-
         matched_results = [
             {
                 "category": match["metadata"]["category"],
+                "db_category": snake_to_camel(
+                    match["metadata"]["category"], isSummary=False
+                ),
+                "db_category_2": snake_to_camel(match["metadata"]["category"]),
                 "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
                 "chunk_index": match["metadata"].get("chunk_index", None),
-                "text": match["metadata"].get("text", "No text found"),
             }
             for match in results.get("matches", [])
         ]
 
+        grouped_result = group_by_depoIQ_ID(matched_results)
+
+        custom_response = []
+
+        for depData in matched_results:
+            depo_id = depData["depoIQ_ID"]
+            category = depData["db_category"]
+            category_2 = depData["db_category_2"]
+            chunk_index = int(depData["chunk_index"])
+            summary = grouped_result.get(depo_id, {})
+
+            db_text = (
+                summary.get(category)
+                if category in summary
+                else summary.get(category_2, "No data found")
+            )
+
+            text = extract_text(db_text["text"])
+            text_chunks = split_into_chunks(text)
+            text = text_chunks[chunk_index] if chunk_index < len(text_chunks) else text
+
+            custom_response.append(
+                {
+                    "depoIQ_ID": depo_id,
+                    "category": depData["category"],
+                    "chunk_index": chunk_index,
+                    "text": text,
+                }
+            )
+
         # Construct initial response
         response = {
             "answer_for_query": (
-                matched_results[0]["text"] if matched_results else "No answer found"
+                custom_response[0]["text"] if custom_response else "No answer found"
             ),
             "user_query": query_text,
-            "metadata": matched_results,
+            "metadata": custom_response,
         }
+
+        # return json.dumps(response, indent=4)
 
         # Define GPT prompt
         prompt = f"""
@@ -384,7 +423,7 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
             "depoIQ_ID": depoIQ_ID,
             "category": category,
             "chunk_index": chunk_index,
-            "text": chunk_value,
+            # "text": chunk_value,
         }
 
         # Add to batch
