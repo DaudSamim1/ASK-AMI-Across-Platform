@@ -30,12 +30,6 @@ if not OPENAI_API_KEY or not PINECONE_API_KEY:
 app = Flask(__name__)
 swagger = Swagger(app)
 
-# Dummy data storage
-items = [
-    {"id": 1, "name": "Item 1", "description": "This is item 1"},
-    {"id": 2, "name": "Item 2", "description": "This is item 2"},
-]
-
 
 def generate_token():
     # Generate access token
@@ -268,59 +262,83 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         return {"status": "error", "message": str(e)}
 
 
-# Function to generate a nearest relevant query based on the given reference text and user query.
-def getDepoSummary(depoIQ_ID):
-    query = """
-    query GetDepoSummary($depoId: ID!) {
-      getDepo(depoId: $depoId) {
-        summary {
-          overview {
-            title
-            description
-            text
-          }
-          highLevelSummary {
-            title
-            description
-            text
-          }
-          detailedSummary {
-            title
-            description
-            text
-          }
-          topicalSummary {
-            title
-            description
-            text
-          }
-          visualization {
-            title
-            description
-            text
-          }
+# Function to generate to Get Depo
+def getDepo(depoIQ_ID):
+    try:
+        query = """
+        query GetDepoSummary($depoId: ID!) {
+            getDepo(depoId: $depoId) {
+                transcript {
+                    pageNumber
+                    pageNumberAtBeforeLines
+                    pageText
+                    lines {
+                        lineNumber
+                        lineText
+                    }
+                }
+                summary {
+                    overview {
+                        title
+                        description
+                        text
+                    }
+                    highLevelSummary {
+                        title
+                        description
+                        text
+                    }
+                    detailedSummary {
+                        title
+                        description
+                        text
+                    }
+                    topicalSummary {
+                        title
+                        description
+                        text
+                    }
+                    visualization {
+                        title
+                        description
+                        text
+                    }
+                }
+            }
         }
-      }
-    }
-    """
+        """
 
-    payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
+        payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
 
-    token = generate_token()
+        token = generate_token()
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": token,
-    }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": token,
+        }
 
-    response = requests.post(GRAPHQL_URL, json=payload, headers=headers)
+        response = requests.post(GRAPHQL_URL, json=payload, headers=headers)
 
-    if response.status_code == 200:
-        return response.json()["data"]["getDepo"]["summary"]
-    elif response.status_code == 401:
-        raise Exception("Unauthorized - Invalid Token")
-    else:
-        raise Exception(f"Failed to fetch depo data: {response.text}")
+        if response.status_code == 200:
+            return response.json()["data"]["getDepo"]
+        elif response.status_code == 401:
+            raise Exception("Unauthorized - Invalid Token")
+        else:
+            raise Exception(f"Failed to fetch depo data: {response.text}")
+    except Exception as e:
+        print(f"Error fetching depo data: {e}")
+        return {}
+
+
+# Function to generate to Get Summary from Depo
+def getDepoSummary(depoIQ_ID):
+    """Get Depo Summary from DepoIQ_ID"""
+    try:
+        depo = getDepo(depoIQ_ID)
+        return depo["summary"]
+    except Exception as e:
+        print(f"Error fetching depo summary: {e}")
+        return {}
 
 
 # Initialize Pinecone and create the index if it doesn't exist
@@ -355,6 +373,7 @@ def initialize_pinecone_index(index_name):
 
 # Initialize Pinecone index
 summariesIndex = initialize_pinecone_index("summaries-index")
+transcriptIndex = initialize_pinecone_index("transcript-index")
 
 
 # Function to convert camelCase to snake_case
@@ -446,14 +465,180 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
     return len(vectors_to_upsert), skipped_chunks
 
 
+def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
+    vectors_to_upsert = []
+    skipped_chunks = []
+
+    for i in range(0, len(transcript_data), 3):
+        grouped_pages = transcript_data[i : i + 3]
+
+        # Extract transcript lines, ensuring each line is properly formatted
+        raw_lines = [
+            line["lineText"].strip()  # Ensure newline preservation
+            for page in grouped_pages
+            for line in page.get("lines", [])
+            if line["lineText"].strip()  # Remove empty or whitespace-only lines
+        ]
+
+        # Ensure text formatting is preserved for embeddings
+        trimmed_text = " ".join(raw_lines).strip()  # Preserve proper line structure
+
+        if not trimmed_text:
+            print(f"⚠️ Skipping empty text chunk for pages {i+1}-{i+3}")
+            continue
+
+        print(
+            f"\n\n🔹 Storing text chunk (Pages {grouped_pages[0]['pageNumber']} - {grouped_pages[-1]['pageNumber']}):\n{trimmed_text[:500]}...\n"
+        )
+
+        # Generate embedding
+        embedding = generate_embedding(trimmed_text)
+
+        # Debug: Check if embedding is valid
+        if not any(embedding):
+            print(f"⚠️ Skipping empty embedding for pages {i+1}-{i+3}")
+            continue
+
+        # Add the actual transcript text in metadata for retrieval
+        metadata = {
+            "depoIQ_ID": depoIQ_ID,
+            "startPage": grouped_pages[0]["pageNumber"],
+            "endPage": grouped_pages[-1]["pageNumber"],
+            "text": trimmed_text,  # Store transcript text in metadata
+        }
+
+        vectors_to_upsert.append(
+            {
+                "id": str(uuid.uuid4()),  # Unique ID
+                "values": embedding,  # Embedding vector
+                "metadata": metadata,  # Metadata including the text
+            }
+        )
+
+    if vectors_to_upsert:
+        transcriptIndex.upsert(vectors=vectors_to_upsert)
+        print(
+            f"✅ Successfully inserted {len(vectors_to_upsert)} transcript chunks in Pinecone."
+        )
+
+    return len(vectors_to_upsert), skipped_chunks
+
+
+def find_exact_text(query_text, transcript_chunk, start_page, end_page):
+
+    lines = transcript_chunk.split("\n")
+
+    # 🔹 Convert float page numbers to integers
+    start_page = int(start_page) if start_page else 1
+    end_page = int(end_page) if end_page else start_page
+
+    for page in range(start_page, end_page + 1):  # 🔹 Ensure range() gets integers
+        for line_num, line in enumerate(lines, start=1):
+            if query_text.lower() in line.lower():  # Case-insensitive match
+                return line.strip(), page, line_num  # Return the found line
+
+    return "Query not found in this chunk.", start_page, "Unknown"
+
+
+def query_transcript_pinecone(query_text, depo_id, top_k=5):
+    """Queries Pinecone for transcript data and finds the best match directly."""
+    try:
+        print(f"\n🔍 Querying Pinecone for: '{query_text}' (depo_id: {depo_id})")
+
+        # Generate embedding for the query
+        query_vector = generate_embedding(query_text)
+
+        # Define filter criteria to search within the specific depo_id
+        filter_criteria = {"depoIQ_ID": depo_id}
+
+        # Search in Pinecone
+        results = transcriptIndex.query(
+            vector=query_vector,
+            top_k=top_k,
+            include_metadata=True,
+            filter=filter_criteria,
+        )
+
+        matched_results = []
+
+        for match in results.get("matches", []):
+            start_page = match["metadata"].get(
+                "startPage", 1
+            )  # Default to page 1 if missing
+            end_page = match["metadata"].get("endPage", start_page)
+
+            # 🔹 Convert page numbers to integers to prevent float errors
+            start_page = int(start_page)
+            end_page = int(end_page)
+
+            chunk_text = match["metadata"].get("text", "")
+
+            # print(
+            #     f"\n📌 Retrieved Chunk ({start_page}-{end_page}):\n{chunk_text[:300]}...\n"
+            # )
+
+            # Find exact match inside the retrieved chunk
+            # found_text, page_num, line_num = find_exact_text(
+            #     query_text, chunk_text, start_page, end_page
+            # )
+
+            matched_results.append(
+                {
+                    "query_text": query_text,
+                    "chunk_text": chunk_text,
+                    "start_page": start_page,
+                    "end_page": end_page,
+                    # "matched_text": found_text,
+                    # "pageNumber": page_num,
+                    # "lineNumber": line_num,
+                }
+            )
+
+        # Construct response
+        response = matched_results
+
+        return json.dumps(response, indent=4)
+
+    except Exception as e:
+        print(f"❌ Error querying Pinecone: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # 🏠 Home Endpoint for testing
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"message": "Welcome to the Python Project API!"})
 
 
+@app.route("/depo/<string:depoIQ_ID>", methods=["GET"])
+def get_depo(depoIQ_ID):
+    """
+    Get Depo By depoIQ_ID
+    ---
+    tags:
+      - Depo
+    parameters:
+      - name: depoIQ_ID
+        in: path
+        type: string
+        required: true
+        description: The ID of the depo
+    responses:
+      200:
+        description: Returns the success message
+      500:
+        description: Internal server error
+    """
+    try:
+        depo = getDepo(depoIQ_ID)
+        return jsonify(depo), 200
+
+    except Exception as e:
+        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
+
+
 @app.route("/add-summaries/<string:depoIQ_ID>", methods=["GET"])
-def add_summary(depoIQ_ID):
+def add_depo(depoIQ_ID):
     """
     Get Summaries from Depo and store into Pinecone
     ---
@@ -513,7 +698,7 @@ def add_summary(depoIQ_ID):
 @app.route("/talk-summary", methods=["POST"])
 def talk_summary():
     """
-    Talk to summaries by depo_id
+    Talk to depo by depo_id
     ---
     tags:
       - Summary
@@ -551,44 +736,56 @@ def talk_summary():
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
 
 
-@app.route("/items", methods=["GET"])
-def get_items():
-    """Get all items
-    ---
-    tags:
-      - Items
-    responses:
-      200:
-        description: List of all items
+@app.route("/add-transcript/<string:depoIQ_ID>", methods=["GET"])
+def add_depo_transcript(depoIQ_ID):
     """
-    return jsonify(items)
-
-
-@app.route("/items/<int:item_id>", methods=["GET"])
-def get_item(item_id):
-    """Get item by ID
+    Get transcript from Depo and store into Pinecone
     ---
     tags:
-      - Items
+      - Transcript
     parameters:
-      - name: item_id
+      - name: depoIQ_ID
         in: path
-        type: integer
+        type: string
         required: true
+        description: The ID of the depo
     responses:
       200:
-        description: Returns the requested item
+        description: Returns the success message
+      500:
+        description: Internal server error
     """
-    item = next((item for item in items if item["id"] == item_id), None)
-    return jsonify(item) if item else (jsonify({"error": "Item not found"}), 404)
+    try:
+
+        depo_data = getDepo(depoIQ_ID)
+        transcript_data = depo_data.get("transcript", [])
+
+        # print(f"Transcript data for depoIQ_ID ---> {transcript_data}")
+
+        # Store transcript data
+        inserted_transcripts, skipped_transcripts = store_transcript_lines_in_pinecone(
+            depoIQ_ID, transcript_data
+        )
+
+        response = {
+            "status": "success",
+            "message": f"Stored {inserted_transcripts} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "skipped_count": len(skipped_transcripts),
+        }
+
+        return jsonify(response), 200
+
+    except Exception as e:
+        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
 
 
-@app.route("/items", methods=["POST"])
-def add_item():
-    """Add a new item
+@app.route("/talk-transcript", methods=["POST"])
+def talk_depo_transrpit():
+    """
+    Talk to depo by depo_id
     ---
     tags:
-      - Items
+      - Transcript
     parameters:
       - name: body
         in: body
@@ -596,77 +793,32 @@ def add_item():
         schema:
           type: object
           properties:
-            name:
+            depo_id:
               type: string
-            description:
-              type: string
-    responses:
-      201:
-        description: Item added successfully
-    """
-    data = request.json
-    new_item = {
-        "id": len(items) + 1,
-        "name": data["name"],
-        "description": data["description"],
-    }
-    items.append(new_item)
-    return jsonify(new_item), 201
-
-
-@app.route("/items/<int:item_id>", methods=["PUT"])
-def update_item(item_id):
-    """Update an existing item
-    ---
-    tags:
-      - Items
-    parameters:
-      - name: item_id
-        in: path
-        type: integer
-        required: true
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            name:
-              type: string
-            description:
+            user_query:
               type: string
     responses:
       200:
-        description: Item updated successfully
+        description: Returns the success message
     """
-    item = next((item for item in items if item["id"] == item_id), None)
-    if not item:
-        return jsonify({"error": "Item not found"}), 404
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request, JSON body required"}), 400
 
-    data = request.json
-    item["name"] = data["name"]
-    item["description"] = data["description"]
-    return jsonify(item)
+        depo_id = data.get("depo_id")
+        user_query = data.get("user_query")
 
+        if not depo_id or not user_query:
+            return jsonify({"error": "Missing depo_id or user_query"}), 400
 
-@app.route("/items/<int:item_id>", methods=["DELETE"])
-def delete_item(item_id):
-    """Delete an item
-    ---
-    tags:
-      - Items
-    parameters:
-      - name: item_id
-        in: path
-        type: integer
-        required: true
-    responses:
-      200:
-        description: Item deleted successfully
-    """
-    global items
-    items = [item for item in items if item["id"] != item_id]
-    return jsonify({"message": "Item deleted successfully"})
+        # Query Pinecone for transcript
+        transcript_response = query_transcript_pinecone(user_query, depo_id, top_k=8)
+
+        return transcript_response, 200
+
+    except Exception as e:
+        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
 
 
 if __name__ == "__main__":
