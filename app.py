@@ -49,15 +49,17 @@ def generate_token():
 
 
 # Function to generate embeddings from OpenAI
-def generate_embedding(text, model="text-embedding-3-small"):
+def generate_embedding(text):
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        text = text.replace("\n", " ")  # Clean text
-        response = client.embeddings.create(input=[text], model=model)
+        text = text.replace("\n", " ").replace("\r", " ")
+        response = client.embeddings.create(
+            input=[text], model="text-embedding-ada-002"
+        )
         return response.data[0].embedding
     except Exception as e:
-        print(f"Error generating embedding: {e}\n\n\n\n text is -- {text}")
-        return np.zeros(1536).tolist()
+        print(f"Error generating embeddings: {e}")
+        return False
 
 
 # Function to convert camelCase to snake_case
@@ -78,12 +80,18 @@ def snake_to_camel(name, isSummary=True):
 
 
 # Function to group by depoIQ_ID for Pinecone results
-def group_by_depoIQ_ID(data):
+def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
     grouped_data = {}
     for entry in data:
         depoIQ_ID = entry["depoIQ_ID"]
         if depoIQ_ID not in grouped_data:
-            grouped_data[depoIQ_ID] = getDepoSummary(depoIQ_ID)
+            if isTranscript:
+                grouped_data[depoIQ_ID] = getDepoTranscript(depoIQ_ID)
+
+            if isSummary:
+                grouped_data[depoIQ_ID] = getDepoSummary(
+                    depoIQ_ID, isSummary=isSummary, isTranscript=isTranscript
+                )
     return grouped_data
 
 
@@ -94,6 +102,9 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
 
         # Generate query embedding
         query_vector = generate_embedding(query_text)
+
+        if not query_vector:
+            return {"status": "error", "message": "Failed to generate query embedding."}
 
         # Define filter criteria (search within `depo_id`)
         filter_criteria = {}
@@ -122,7 +133,9 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
             for match in results.get("matches", [])
         ]
 
-        grouped_result = group_by_depoIQ_ID(matched_results)
+        grouped_result = group_by_depoIQ_ID(
+            matched_results, isSummary=True, isTranscript=False
+        )
 
         custom_response = []
 
@@ -262,13 +275,14 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
         return {"status": "error", "message": str(e)}
 
 
-# Function to generate to Get Depo
-def getDepo(depoIQ_ID):
+# Function to get Depo from DepoIQ_ID
+def getDepo(depoIQ_ID, isSummary=True, isTranscript=True):
     try:
+        # GraphQL query with conditional @include directives
         query = """
-        query GetDepoSummary($depoId: ID!) {
+        query GetDepoSummary($depoId: ID!, $includeSummary: Boolean!, $includeTranscript: Boolean!) {
             getDepo(depoId: $depoId) {
-                transcript {
+                transcript @include(if: $includeTranscript) {
                     pageNumber
                     pageNumberAtBeforeLines
                     pageText
@@ -277,7 +291,7 @@ def getDepo(depoIQ_ID):
                         lineText
                     }
                 }
-                summary {
+                summary @include(if: $includeSummary) {
                     overview {
                         title
                         description
@@ -308,7 +322,14 @@ def getDepo(depoIQ_ID):
         }
         """
 
-        payload = {"query": query, "variables": {"depoId": depoIQ_ID}}
+        payload = {
+            "query": query,
+            "variables": {
+                "depoId": depoIQ_ID,
+                "includeSummary": isSummary,
+                "includeTranscript": isTranscript,
+            },
+        }
 
         token = generate_token()
 
@@ -334,10 +355,21 @@ def getDepo(depoIQ_ID):
 def getDepoSummary(depoIQ_ID):
     """Get Depo Summary from DepoIQ_ID"""
     try:
-        depo = getDepo(depoIQ_ID)
+        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=False)
         return depo["summary"]
     except Exception as e:
         print(f"Error fetching depo summary: {e}")
+        return {}
+
+
+# Function to generate Get Transcript from Depo
+def getDepoTranscript(depoIQ_ID):
+    """Get Depo Transcript from DepoIQ_ID"""
+    try:
+        depo = getDepo(depoIQ_ID, isSummary=False, isTranscript=True)
+        return depo["transcript"]
+    except Exception as e:
+        print(f"Error fetching depo transcript: {e}")
         return {}
 
 
@@ -392,7 +424,7 @@ def split_into_chunks(text):
 
 
 # Function to check if a summary already exists in Pinecone
-def check_existing_entry(depoIQ_ID, category, chunk_index):
+def check_existing_summary_entry(depoIQ_ID, category, chunk_index):
     """Checks if a summary already exists in Pinecone."""
     try:
         existing_entries = summariesIndex.query(
@@ -401,6 +433,25 @@ def check_existing_entry(depoIQ_ID, category, chunk_index):
                 "depoIQ_ID": depoIQ_ID,
                 "chunk_index": chunk_index,
                 "category": category,
+            },
+            top_k=1,
+        )
+        return bool(existing_entries["matches"])
+    except Exception as e:
+        print(f"⚠️ Error querying Pinecone: {e}")
+        return False
+
+
+# Function to check if a transcript already exists in Pinecone
+def check_existing_transcript_entry(depoIQ_ID, endPage, startPage):
+    """Checks if a transcript already exists in Pinecone."""
+    try:
+        existing_entries = transcriptIndex.query(
+            vector=np.random.rand(1536).tolist(),  # Use a dummy query vector
+            filter={
+                "depoIQ_ID": depoIQ_ID,
+                "startPage": startPage,
+                "endPage": endPage,
             },
             top_k=1,
         )
@@ -425,7 +476,7 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
             continue
 
         # Check if summary already exists
-        if check_existing_entry(depoIQ_ID, category, chunk_index):
+        if check_existing_summary_entry(depoIQ_ID, category, chunk_index):
             skipped_chunks.append(chunk_index)
             print(f"⚠️ Summary already exists: {chunk_index}, skipping...")
             continue
@@ -468,9 +519,24 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
 def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
     vectors_to_upsert = []
     skipped_chunks = []
+    chunk_page_range = 3
 
-    for i in range(0, len(transcript_data), 3):
-        grouped_pages = transcript_data[i : i + 3]
+    for i in range(0, len(transcript_data), chunk_page_range):
+        grouped_pages = transcript_data[i : i + chunk_page_range]
+
+        # check if already exists in pinecone
+        if check_existing_transcript_entry(
+            depoIQ_ID,
+            endPage=grouped_pages[-1]["pageNumber"],
+            startPage=grouped_pages[0]["pageNumber"],
+        ):
+            skipped_chunks.append(
+                "Pages " + str(i + 1) + "-" + str(i + chunk_page_range)
+            )
+            print(
+                f"⚠️ Transcript already exists for pages {i+1}-{i+chunk_page_range}, skipping..."
+            )
+            continue
 
         # Extract transcript lines, ensuring each line is properly formatted
         raw_lines = [
@@ -484,11 +550,11 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
         trimmed_text = " ".join(raw_lines).strip()  # Preserve proper line structure
 
         if not trimmed_text:
-            print(f"⚠️ Skipping empty text chunk for pages {i+1}-{i+3}")
+            print(f"⚠️ Skipping empty text chunk for pages {i+1}-{i+chunk_page_range}")
             continue
 
         print(
-            f"\n\n🔹 Storing text chunk (Pages {grouped_pages[0]['pageNumber']} - {grouped_pages[-1]['pageNumber']}):\n{trimmed_text[:500]}...\n"
+            f"\n\n🔹 Storing text chunk (Pages {grouped_pages[0]['pageNumber']} - {grouped_pages[-1]['pageNumber']})\n\n"
         )
 
         # Generate embedding
@@ -496,7 +562,7 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
 
         # Debug: Check if embedding is valid
         if not any(embedding):
-            print(f"⚠️ Skipping empty embedding for pages {i+1}-{i+3}")
+            print(f"⚠️ Skipping empty embedding for pages {i+1}-{i+chunk_page_range}")
             continue
 
         # Add the actual transcript text in metadata for retrieval
@@ -504,7 +570,8 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
             "depoIQ_ID": depoIQ_ID,
             "startPage": grouped_pages[0]["pageNumber"],
             "endPage": grouped_pages[-1]["pageNumber"],
-            "text": trimmed_text,  # Store transcript text in metadata
+            # "text": trimmed_text,  # Store transcript text in metadata
+            # "embedding": json.dumps(embedding),  # Store embedding as JSON string
         }
 
         vectors_to_upsert.append(
@@ -524,22 +591,6 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
     return len(vectors_to_upsert), skipped_chunks
 
 
-def find_exact_text(query_text, transcript_chunk, start_page, end_page):
-
-    lines = transcript_chunk.split("\n")
-
-    # 🔹 Convert float page numbers to integers
-    start_page = int(start_page) if start_page else 1
-    end_page = int(end_page) if end_page else start_page
-
-    for page in range(start_page, end_page + 1):  # 🔹 Ensure range() gets integers
-        for line_num, line in enumerate(lines, start=1):
-            if query_text.lower() in line.lower():  # Case-insensitive match
-                return line.strip(), page, line_num  # Return the found line
-
-    return "Query not found in this chunk.", start_page, "Unknown"
-
-
 def query_transcript_pinecone(query_text, depo_id, top_k=5):
     """Queries Pinecone for transcript data and finds the best match directly."""
     try:
@@ -547,6 +598,9 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
 
         # Generate embedding for the query
         query_vector = generate_embedding(query_text)
+
+        if not query_vector:
+            return {"status": "error", "message": "Failed to generate query embedding."}
 
         # Define filter criteria to search within the specific depo_id
         filter_criteria = {"depoIQ_ID": depo_id}
@@ -559,45 +613,174 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
             filter=filter_criteria,
         )
 
-        matched_results = []
+        matched_results = [
+            {
+                "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
+                "start_page": match["metadata"].get("startPage", 1),
+                "end_page": match["metadata"].get("endPage", 1),
+                "score": match["score"],
+            }
+            for match in results.get("matches", [])
+        ]
 
-        for match in results.get("matches", []):
-            start_page = match["metadata"].get(
-                "startPage", 1
-            )  # Default to page 1 if missing
-            end_page = match["metadata"].get("endPage", start_page)
+        grouped_result = group_by_depoIQ_ID(
+            matched_results, isSummary=False, isTranscript=True
+        )
 
-            # 🔹 Convert page numbers to integers to prevent float errors
-            start_page = int(start_page)
-            end_page = int(end_page)
+        custom_match = []
 
-            chunk_text = match["metadata"].get("text", "")
+        for match in matched_results:
+            depoIQ_ID = match["depoIQ_ID"]
+            start_page = int(match["start_page"])
+            end_page = int(match["end_page"])
+            transcript = grouped_result.get(depoIQ_ID, {})
 
-            # print(
-            #     f"\n📌 Retrieved Chunk ({start_page}-{end_page}):\n{chunk_text[:300]}...\n"
-            # )
+            # transcript type = {"pageNumber": 1,lines: [{lineNumber: 1, lineText: "Hello World"}]}
 
-            # Find exact match inside the retrieved chunk
-            # found_text, page_num, line_num = find_exact_text(
-            #     query_text, chunk_text, start_page, end_page
-            # )
+            pages = [
+                page
+                for page in transcript
+                if start_page <= page["pageNumber"] <= end_page
+            ]
 
-            matched_results.append(
+            # Extract the text from the retrieved pages
+
+            chunk_text = {}
+
+            for page in pages:
+                page_number = page["pageNumber"]
+                pageLines = page.get("lines", [])
+                pageLines = [
+                    line["lineText"].strip()
+                    for line in pageLines
+                    if line["lineText"].strip()
+                ]
+                chunk_text[page_number] = " ".join(pageLines)
+
+            custom_match.append(
                 {
-                    "query_text": query_text,
-                    "chunk_text": chunk_text,
+                    "depoIQ_ID": depoIQ_ID,
                     "start_page": start_page,
                     "end_page": end_page,
-                    # "matched_text": found_text,
-                    # "pageNumber": page_num,
-                    # "lineNumber": line_num,
+                    "chunk_text": chunk_text,
                 }
             )
 
         # Construct response
-        response = matched_results
+        response = {"query_text": query_text, "metadata": custom_match}
 
-        return json.dumps(response, indent=4)
+        # return json.dumps(response, indent=4)
+
+        # Example response structure
+        prompt = f"""
+                You are an AI assistant that extracts and organizes transcript data efficiently.
+
+                Your task is to **analyze and sort the given transcript JSON data** based on its relevance to the `user_query`
+                and return **only the top 3 most relevant responses** in `"metadata"` while maintaining the original structure.
+
+                Additionally, extract the **most relevant page's data** from `"chunk_text"` and place it in `"answer_for_query"`.
+                The **original structure of `"metadata"` must remain unchanged**, except for sorting based on relevance.
+
+                ---
+
+                ### **Given Data:**
+                {response}
+
+                ---
+
+                ### **Instructions:**
+                - You will receive a **JSON payload** containing:
+                - A **user_query**
+                - Multiple **metadata entries**, each containing:
+                    - A `"depoIQ_ID"`
+                    - `"start_page"` and `"end_page"`
+                    - A `"chunk_text"` object, where keys represent page numbers and values contain transcript text.
+
+                - **Your goal is to determine which page best answers the `user_query` and return its exact `"chunk_text"` in `"answer_for_query"`**.
+                - **Ensure `"answer_for_query"` contains the exact text from the most relevant `"chunk_text"` page**.
+                - **Extract the top three most relevant metadata entries and ONLY sort them** without modifying any data.
+                - **DO NOT alter, modify, or rewrite `"chunk_text"` in `"metadata"`—it must remain exactly the same.**
+                - **Include `"start_page"` and `"end_page"` in the main response, which should match the values from the most relevant `"chunk_text"`.**
+                - **Verify multiple times** that `"chunk_text"` in `"metadata"` is **unchanged and complete** before returning the final output.
+                - **DO NOT truncate, summarize, or alter any text.** The original structure must be preserved.
+                - **Ensure that metadata contains exactly THREE entries** in the response.
+
+                ---
+
+                ### **Sorting Criteria:**
+                - **Highest Relevance:** The `"chunk_text"` that directly and accurately answers the `"user_query"` should be placed in `"answer_for_query"`, using the **most relevant page only**.
+                - **Metadata Sorting:** **Sort the `"metadata"` array** by relevance, keeping all entries unchanged except for order.
+                - **Ensure that the selected `"answer_for_query"` comes from the correct `"chunk_text"` in `"metadata"`**.
+                - **DO NOT modify or truncate `"chunk_text"` in `"metadata"`.**
+                - **Return exactly THREE metadata entries, even if more exist.**
+
+
+                ---
+                """
+
+        # Initialize OpenAI client
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        # Call GPT-4o-mini API
+        ai_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that extracts precise answers from multiple given transcripts efficiently.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": json.loads(
+                    """
+                {
+                    "name": "query_response",
+                    "description": "A structured response for a query and its matched answers.",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "answer_for_query": { "type": "string" },
+                            "user_query": { "type": "string" },
+                            "start_page": { "type": "integer" },
+                            "end_page": { "type": "integer" },
+                            "metadata": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "depoIQ_ID": { "type": "string" },
+                                        "start_page": { "type": "integer" },
+                                        "end_page": { "type": "integer" },
+                                        "chunk_text": {
+                                            "type": "object",
+                                            "additionalProperties": { "type": "string" }
+                                        }
+                                    },
+                                    "required": ["depoIQ_ID", "start_page", "end_page", "chunk_text"]
+                                },
+                                "minItems": 3,
+                                "maxItems": 3
+                            }
+                        },
+                        "required": ["answer_for_query", "user_query", "start_page", "end_page", "metadata"]
+                    }
+                }
+                """
+                ),
+            },
+        )
+
+        print("ai_response", ai_response)
+
+        # Convert response to JSON
+        ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
+
+        print(f"AI JSON Response: {ai_json_response}")
+
+        return json.dumps(ai_json_response, indent=4)
 
     except Exception as e:
         print(f"❌ Error querying Pinecone: {e}")
@@ -630,37 +813,19 @@ def get_depo(depoIQ_ID):
         description: Internal server error
     """
     try:
-        depo = getDepo(depoIQ_ID)
+        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
         return jsonify(depo), 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
 
 
-@app.route("/add-summaries/<string:depoIQ_ID>", methods=["GET"])
-def add_depo(depoIQ_ID):
-    """
-    Get Summaries from Depo and store into Pinecone
-    ---
-    tags:
-      - Summary
-    parameters:
-      - name: depoIQ_ID
-        in: path
-        type: string
-        required: true
-        description: The ID of the depo
-    responses:
-      200:
-        description: Returns the success message
-      500:
-        description: Internal server error
-    """
+# Function to generate add depo summaries to pinecone
+def add_depo_summaries(depo_summary, depoIQ_ID):
     try:
-        depo_summary = getDepoSummary(depoIQ_ID)
         excluded_keys = ["visualization"]
         total_inserted = 0
-        skipped_sub_categories = []
+        skipped_sub_categories = {}
 
         for key, value in depo_summary.items():
             if key in excluded_keys:
@@ -675,24 +840,109 @@ def add_depo(depoIQ_ID):
             )
 
             total_inserted += inserted_count
-            skipped_sub_categories.extend(skipped_chunks)
+            skipped_sub_categories[category] = skipped_chunks
 
         # Response
         response = {
             "status": "success",
             "message": f"Stored {total_inserted} summaries in Pinecone for depoIQ_ID {depoIQ_ID}.",
             "data": {
-                "total_inserted": total_inserted,
                 "depoIQ_ID": depoIQ_ID,
-                "skipped_sub_categories": skipped_sub_categories,
-                "skipped_count": len(skipped_sub_categories),
+                "total_inserted": total_inserted,
+                "skipped_details": skipped_sub_categories,
+                "skipped_count": sum(len(v) for v in skipped_sub_categories.values()),
             },
+        }
+
+        return response
+
+    except Exception as e:
+        return {"status": "error", "message": "Something went wrong", "details": str(e)}
+
+
+def add_depo_transcript(transcript_data, depoIQ_ID):
+    try:
+        if not transcript_data:
+            return {
+                "status": "Not Found",
+                "message": f"No transcript data found for depoIQ_ID {depoIQ_ID}.",
+            }
+
+        # Store transcript data
+        inserted_transcripts, skipped_transcripts = store_transcript_lines_in_pinecone(
+            depoIQ_ID, transcript_data
+        )
+
+        response = {
+            "status": "success",
+            "message": f"Stored {inserted_transcripts} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "data": {
+                "depoIQ_ID": depoIQ_ID,
+                "total_inserted": inserted_transcripts,
+                "skipped_details": skipped_transcripts,
+                "skipped_count": len(skipped_transcripts),
+            },
+        }
+
+        return response
+
+    except Exception as e:
+        return {"status": "error", "message": "Something went wrong", "details": str(e)}
+
+
+@app.route("/add-depo/<string:depoIQ_ID>", methods=["GET"])
+def add_depo(depoIQ_ID):
+    """
+    Get Summaries & Transcript from Depo and store into Pinecone
+    ---
+    tags:
+      - Depo
+    parameters:
+      - name: depoIQ_ID
+        in: path
+        type: string
+        required: true
+        description: The ID of the depo
+    responses:
+      200:
+        description: Returns the success message
+      500:
+        description: Internal server error
+    """
+    try:
+        # Get depo data
+        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
+
+        # Extract summary & transcript data
+        summary_data = depo.get("summary", {})
+        transcript_data = depo.get("transcript", {})
+
+        # Process & store summaries
+        depo_response = add_depo_summaries(summary_data, depoIQ_ID)
+
+        # Process & store transcript
+        transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
+
+        # Generate detailed response
+        response = {
+            "status": "success",
+            "depo": depo_response,
+            "transcript": transcript_response,
         }
 
         return jsonify(response), 200
 
     except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
+        return (
+            jsonify(
+                {
+                    "status": "error",
+                    "message": "Something went wrong",
+                    "details": str(e),
+                }
+            ),
+            500,
+        )
 
 
 @app.route("/talk-summary", methods=["POST"])
@@ -731,49 +981,6 @@ def talk_summary():
         response = query_pinecone(user_query, depo_id, top_k=8)
 
         return response, 200
-
-    except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
-
-
-@app.route("/add-transcript/<string:depoIQ_ID>", methods=["GET"])
-def add_depo_transcript(depoIQ_ID):
-    """
-    Get transcript from Depo and store into Pinecone
-    ---
-    tags:
-      - Transcript
-    parameters:
-      - name: depoIQ_ID
-        in: path
-        type: string
-        required: true
-        description: The ID of the depo
-    responses:
-      200:
-        description: Returns the success message
-      500:
-        description: Internal server error
-    """
-    try:
-
-        depo_data = getDepo(depoIQ_ID)
-        transcript_data = depo_data.get("transcript", [])
-
-        # print(f"Transcript data for depoIQ_ID ---> {transcript_data}")
-
-        # Store transcript data
-        inserted_transcripts, skipped_transcripts = store_transcript_lines_in_pinecone(
-            depoIQ_ID, transcript_data
-        )
-
-        response = {
-            "status": "success",
-            "message": f"Stored {inserted_transcripts} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
-            "skipped_count": len(skipped_transcripts),
-        }
-
-        return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
