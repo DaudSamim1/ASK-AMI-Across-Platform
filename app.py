@@ -21,6 +21,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 GRAPHQL_URL = os.getenv("GRAPHQL_URL")
+SUMMARIES_INDEX_NAME = os.getenv("SUMMARIES_INDEX_NAME", "summaries-index")
+TRANSCRIPT_INDEX_NAME = os.getenv("TRANSCRIPT_INDEX_NAME", "transcript-index")
 
 # Ensure keys are loaded
 if not OPENAI_API_KEY or not PINECONE_API_KEY:
@@ -31,13 +33,57 @@ app = Flask(__name__)
 swagger = Swagger(app)
 
 
-def generate_token():
+# Initialize Pinecone and create the index if it doesn't exist
+def initialize_pinecone_index(index_name):
+    """Initialize Pinecone and create the index if it doesn't exist."""
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+
+    # List existing indexes
+    existing_indexes = pc.list_indexes().names()
+
+    if index_name not in existing_indexes:
+        print(f"🔍 Index '{index_name}' not found. Creating it now...")
+
+        pc.create_index(
+            name=index_name,
+            dimension=1536,  # OpenAI embedding dimension
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+
+        # Wait until the index is ready
+        while not pc.describe_index(index_name).status["ready"]:
+            print("⏳ Waiting for index to be ready...")
+            time.sleep(2)
+
+        print(f"✅ Index '{index_name}' created and ready.")
+    else:
+        print(f"✅ Index '{index_name}' already exists.")
+
+    return pc.Index(index_name)
+
+
+# Initialize OpenAI client
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# Initialize Pinecone index
+summariesIndex = initialize_pinecone_index(SUMMARIES_INDEX_NAME)
+transcriptIndex = initialize_pinecone_index(TRANSCRIPT_INDEX_NAME)
+
+
+def generate_token(
+    user_id="677ffbb1f728963ffa7b8dca",
+    company_id="66ff06f4c50afa83deecb020",
+    isSuperAdmin=False,
+    role="ADMIN",
+):
     # Generate access token
     access_token_payload = {
-        "userId": "677ffbb1f728963ffa7b8dca",
-        "companyId": "66ff06f4c50afa83deecb020",
-        "isSuperAdmin": False,
-        "role": "ADMIN",
+        "userId": user_id,
+        "companyId": company_id,
+        "isSuperAdmin": isSuperAdmin,
+        "role": role,
     }
 
     # generate access token
@@ -51,9 +97,8 @@ def generate_token():
 # Function to generate embeddings from OpenAI
 def generate_embedding(text):
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
         text = text.replace("\n", " ").replace("\r", " ")
-        response = client.embeddings.create(
+        response = openai_client.embeddings.create(
             input=[text], model="text-embedding-ada-002"
         )
         return response.data[0].embedding
@@ -89,22 +134,24 @@ def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
                 grouped_data[depoIQ_ID] = getDepoTranscript(depoIQ_ID)
 
             if isSummary:
-                grouped_data[depoIQ_ID] = getDepoSummary(
-                    depoIQ_ID, isSummary=isSummary, isTranscript=isTranscript
-                )
+                grouped_data[depoIQ_ID] = getDepoSummary(depoIQ_ID)
     return grouped_data
 
 
 # Function to query Pinecone and match summaries
-def query_pinecone(query_text, depo_id=None, top_k=3):
+def query_summaries_pinecone(query_text, depo_id=None, top_k=3):
     try:
-        print(f"Querying Pinecone for: {query_text} and depo_id: {depo_id}")
+        print(
+            f"\n🔍 Querying Pinecone for summaries: '{query_text}' (depo_id: {depo_id})"
+        )
 
         # Generate query embedding
         query_vector = generate_embedding(query_text)
 
         if not query_vector:
-            return {"status": "error", "message": "Failed to generate query embedding."}
+            return json.dumps(
+                {"status": "error", "message": "Failed to generate query embedding."}
+            )
 
         # Define filter criteria (search within `depo_id`)
         filter_criteria = {}
@@ -119,6 +166,10 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
             include_metadata=True,
             filter=filter_criteria,
         )
+
+        if not results["matches"] or not any(results["matches"]):
+            print("\n\n No matches found. for summaries")
+            return json.dumps({"status": "Not Found", "message": "No matches found."})
 
         matched_results = [
             {
@@ -216,11 +267,8 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
                     ---
                     """
 
-        # Initialize OpenAI client
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         # Call GPT-4o-mini API
-        ai_response = client.chat.completions.create(
+        ai_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
@@ -229,7 +277,7 @@ def query_pinecone(query_text, depo_id=None, top_k=3):
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=1000,
+            max_tokens=2000,
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -373,48 +421,13 @@ def getDepoTranscript(depoIQ_ID):
         return {}
 
 
-# Initialize Pinecone and create the index if it doesn't exist
-def initialize_pinecone_index(index_name):
-    """Initialize Pinecone and create the index if it doesn't exist."""
-    pc = Pinecone(api_key=PINECONE_API_KEY)
-
-    # List existing indexes
-    existing_indexes = pc.list_indexes().names()
-
-    if index_name not in existing_indexes:
-        print(f"🔍 Index '{index_name}' not found. Creating it now...")
-
-        pc.create_index(
-            name=index_name,
-            dimension=1536,  # OpenAI embedding dimension
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-
-        # Wait until the index is ready
-        while not pc.describe_index(index_name).status["ready"]:
-            print("⏳ Waiting for index to be ready...")
-            time.sleep(2)
-
-        print(f"✅ Index '{index_name}' created and ready.")
-    else:
-        print(f"✅ Index '{index_name}' already exists.")
-
-    return pc.Index(index_name)
-
-
-# Initialize Pinecone index
-summariesIndex = initialize_pinecone_index("summaries-index")
-transcriptIndex = initialize_pinecone_index("transcript-index")
-
-
 # Function to convert camelCase to snake_case
 def extract_text(value):
     """Extracts plain text from HTML or returns simple text."""
     if value.startswith("<"):
         soup = BeautifulSoup(value, "html.parser")
         return soup.get_text()
-    return value
+    return str(value)
 
 
 # Function to split text into paragraphs
@@ -594,13 +607,17 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, transcript_data):
 def query_transcript_pinecone(query_text, depo_id, top_k=5):
     """Queries Pinecone for transcript data and finds the best match directly."""
     try:
-        print(f"\n🔍 Querying Pinecone for: '{query_text}' (depo_id: {depo_id})")
+        print(
+            f"\n🔍 Querying Pinecone for transcript: '{query_text}' (depo_id: {depo_id})"
+        )
 
         # Generate embedding for the query
         query_vector = generate_embedding(query_text)
 
         if not query_vector:
-            return {"status": "error", "message": "Failed to generate query embedding."}
+            return json.dumps(
+                {"status": "error", "message": "Failed to generate query embedding."}
+            )
 
         # Define filter criteria to search within the specific depo_id
         filter_criteria = {"depoIQ_ID": depo_id}
@@ -612,6 +629,10 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
             include_metadata=True,
             filter=filter_criteria,
         )
+
+        if not results["matches"] or not any(results["matches"]):
+            print("\n\n No matches found. for transcript")
+            return json.dumps({"status": "Not Found", "message": "No matches found."})
 
         matched_results = [
             {
@@ -634,8 +655,6 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
             start_page = int(match["start_page"])
             end_page = int(match["end_page"])
             transcript = grouped_result.get(depoIQ_ID, {})
-
-            # transcript type = {"pageNumber": 1,lines: [{lineNumber: 1, lineText: "Hello World"}]}
 
             pages = [
                 page
@@ -718,11 +737,8 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
                 ---
                 """
 
-        # Initialize OpenAI client
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         # Call GPT-4o-mini API
-        ai_response = client.chat.completions.create(
+        ai_response = openai_client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
@@ -731,7 +747,7 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=1000,
+            max_tokens=2000,
             response_format={
                 "type": "json_schema",
                 "json_schema": json.loads(
@@ -773,51 +789,18 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
             },
         )
 
-        print("ai_response", ai_response)
+        print("Successfull response from GPT-4o-mini modal ->", ai_response)
 
         # Convert response to JSON
         ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
 
-        print(f"AI JSON Response: {ai_json_response}")
+        print(f"AI JSON Response: ---> {ai_json_response}")
 
         return json.dumps(ai_json_response, indent=4)
 
     except Exception as e:
         print(f"❌ Error querying Pinecone: {e}")
         return {"status": "error", "message": str(e)}
-
-
-# 🏠 Home Endpoint for testing
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({"message": "Welcome to the Python Project API!"})
-
-
-@app.route("/depo/<string:depoIQ_ID>", methods=["GET"])
-def get_depo(depoIQ_ID):
-    """
-    Get Depo By depoIQ_ID
-    ---
-    tags:
-      - Depo
-    parameters:
-      - name: depoIQ_ID
-        in: path
-        type: string
-        required: true
-        description: The ID of the depo
-    responses:
-      200:
-        description: Returns the success message
-      500:
-        description: Internal server error
-    """
-    try:
-        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
-        return jsonify(depo), 200
-
-    except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
 
 
 # Function to generate add depo summaries to pinecone
@@ -890,7 +873,40 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
         return {"status": "error", "message": "Something went wrong", "details": str(e)}
 
 
-@app.route("/add-depo/<string:depoIQ_ID>", methods=["GET"])
+# 🏠 Home Endpoint for testing
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Welcome to the Python Project API!"})
+
+
+@app.route("/depo/<string:depoIQ_ID>", methods=["GET"])
+def get_depo(depoIQ_ID):
+    """
+    Get Depo By depoIQ_ID
+    ---
+    tags:
+      - Depo
+    parameters:
+      - name: depoIQ_ID
+        in: path
+        type: string
+        required: true
+        description: The ID of the depo
+    responses:
+      200:
+        description: Returns the success message
+      500:
+        description: Internal server error
+    """
+    try:
+        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
+        return jsonify(depo), 200
+
+    except Exception as e:
+        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
+
+
+@app.route("/depo/add/<string:depoIQ_ID>", methods=["GET"])
 def add_depo(depoIQ_ID):
     """
     Get Summaries & Transcript from Depo and store into Pinecone
@@ -945,13 +961,13 @@ def add_depo(depoIQ_ID):
         )
 
 
-@app.route("/talk-summary", methods=["POST"])
+@app.route("/depo/talk", methods=["POST"])
 def talk_summary():
     """
-    Talk to depo by depo_id
+    Talk to depo summaries & transcript by depo_id
     ---
     tags:
-      - Summary
+      - Depo
     parameters:
       - name: body
         in: body
@@ -975,54 +991,25 @@ def talk_summary():
         depo_id = data.get("depo_id")
         user_query = data.get("user_query")
 
+        # Check if depo_id and user_query are provided
         if not depo_id or not user_query:
             return jsonify({"error": "Missing depo_id or user_query"}), 400
 
-        response = query_pinecone(user_query, depo_id, top_k=8)
-
-        return response, 200
-
-    except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
-
-
-@app.route("/talk-transcript", methods=["POST"])
-def talk_depo_transrpit():
-    """
-    Talk to depo by depo_id
-    ---
-    tags:
-      - Transcript
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            depo_id:
-              type: string
-            user_query:
-              type: string
-    responses:
-      200:
-        description: Returns the success message
-    """
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid request, JSON body required"}), 400
-
-        depo_id = data.get("depo_id")
-        user_query = data.get("user_query")
-
-        if not depo_id or not user_query:
-            return jsonify({"error": "Missing depo_id or user_query"}), 400
+        # Query Pinecone for summary
+        summaries_response = query_summaries_pinecone(user_query, depo_id, top_k=8)
 
         # Query Pinecone for transcript
         transcript_response = query_transcript_pinecone(user_query, depo_id, top_k=8)
 
-        return transcript_response, 200
+        # Construct final response
+        response = {
+            "summaries": json.loads(summaries_response),
+            "transcript": json.loads(transcript_response),
+        }
+
+        print(f"\n\n Final Response: {response}")
+
+        return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
