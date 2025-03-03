@@ -225,7 +225,7 @@ def query_summaries_pinecone(query_text, depo_id=None, top_k=3):
             "metadata": custom_response,
         }
 
-        # return json.dumps(response, indent=4)
+        # return json.loads(json.dumps(response))
 
         # Define GPT prompt
         prompt = f"""
@@ -316,7 +316,8 @@ def query_summaries_pinecone(query_text, depo_id=None, top_k=3):
         # Convert response to JSON
         ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
 
-        return json.dumps(ai_json_response, indent=4)
+        # return json.dumps(ai_json_response, indent=4)
+        return clean_json_response(ai_json_response)
 
     except Exception as e:
         print(f"Error querying Pinecone: {e}")
@@ -688,7 +689,7 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
         # Construct response
         response = {"query_text": query_text, "metadata": custom_match}
 
-        # return json.dumps(response, indent=4)
+        # return json.loads(json.dumps(response))
 
         # Example response structure
         prompt = f"""
@@ -747,7 +748,7 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=2000,
+            max_tokens=4000,
             response_format={
                 "type": "json_schema",
                 "json_schema": json.loads(
@@ -792,11 +793,14 @@ def query_transcript_pinecone(query_text, depo_id, top_k=5):
         print("Successfull response from GPT-4o-mini modal ->", ai_response)
 
         # Convert response to JSON
-        ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
+        ai_json_response = clean_json_response(
+            ai_response.choices[0].message.content.strip()
+        )
 
         print(f"AI JSON Response: ---> {ai_json_response}")
 
-        return json.dumps(ai_json_response, indent=4)
+        # return json.dumps(ai_json_response, indent=4)
+        return ai_json_response
 
     except Exception as e:
         print(f"❌ Error querying Pinecone: {e}")
@@ -871,6 +875,34 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
 
     except Exception as e:
         return {"status": "error", "message": "Something went wrong", "details": str(e)}
+
+
+def clean_json_response(response):
+    """Ensure the response is valid JSON"""
+    try:
+        if isinstance(response, requests.Response):
+            response_text = response.text
+        elif isinstance(response, dict):
+            return response  # Already valid
+        elif isinstance(response, str):
+            response_text = response
+        else:
+            return {"error": "Unexpected response format"}
+
+        # ✅ Ensure JSON format
+        response_text = response_text.replace("\n", " ").replace("\r", " ")
+
+        # Debugging: Print partial response for analysis
+        print(f"🔍 Raw JSON Before Parsing: {response_text[:500]}...")
+
+        # Try parsing JSON safely
+        parsed_json = json.loads(response_text)
+
+        return parsed_json  # ✅ Return properly formatted JSON
+
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Parsing Error: {e}")
+        return {"error": "Invalid JSON received", "details": str(e)}
 
 
 # 🏠 Home Endpoint for testing
@@ -995,19 +1027,28 @@ def talk_summary():
         if not depo_id or not user_query:
             return jsonify({"error": "Missing depo_id or user_query"}), 400
 
-        # Query Pinecone for summary
-        summaries_response = query_summaries_pinecone(user_query, depo_id, top_k=8)
+        # ✅ Query Pinecone Safely
+        summaries_response = clean_json_response(
+            query_summaries_pinecone(user_query, depo_id, top_k=8)
+        )
+        transcript_response = clean_json_response(
+            query_transcript_pinecone(user_query, depo_id, top_k=5)
+        )
 
-        # Query Pinecone for transcript
-        transcript_response = query_transcript_pinecone(user_query, depo_id, top_k=8)
+        # ✅ Handle Empty Results
+        if "error" in summaries_response:
+            summaries_response = {"error": "Failed to fetch summaries"}
 
-        # Construct final response
+        if "error" in transcript_response:
+            transcript_response = {"error": "Failed to fetch transcript"}
+
+        # ✅ Construct Final Response
         response = {
-            "summaries": json.loads(summaries_response),
-            "transcript": json.loads(transcript_response),
+            "summaries": summaries_response,
+            "transcript": transcript_response,
         }
 
-        print(f"\n\n Final Response: {response}")
+        print(f"\n\n✅ Final Response: {json.dumps(response, indent=2)}")
 
         return jsonify(response), 200
 
