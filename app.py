@@ -228,7 +228,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
                 )
                 custom_response.append(
                     {
-                        "depoIQ_ID": depoIQ_ID,
+                        # "depoIQ_ID": depoIQ_ID,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
@@ -246,7 +246,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
                 ]
                 custom_response.append(
                     {
-                        "depoIQ_ID": depoIQ_ID,
+                        # "depoIQ_ID": depoIQ_ID,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": " ".join(
@@ -262,6 +262,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
 
         response = {
             "user_query": query_text,
+            "depoIQ_ID": depo_id,
             "metadata": custom_response,
         }
 
@@ -276,32 +277,34 @@ def get_answer_from_AI(response):
     try:
         # Construct prompt
         prompt = f"""
-        You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
+                You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
 
-        ### **Task:**
-        - Analyze the provided `"metadata"` and generate a direct, relevant answer to the `"user_query"`. 
-        - Use the `"text"` field in `"metadata"` to form the most accurate response.
-        - Ensure the generated response directly addresses the `"user_query"` without altering the original `"text"` in `"metadata"`.
+                ### **Task:**
+                - Analyze the provided `"metadata"` and generate a direct, relevant answer to the `"user_query"`. 
+                - Use the `"text"` field in `"metadata"` to form the most accurate response.
+                - Ensure the generated response directly addresses the `"user_query"` without altering the original `"text"` in `"metadata"`.
 
-        ---
+                ---
 
-        ### **Given Data:**
-        {json.dumps(response)}
+                ### **Given Data:**
+                {json.dumps(response)}
 
-        ---
+                ---
 
-        ### **Instructions:**
-        - Identify the most relevant `"text"` entry from `"metadata"` that best answers the `"user_query"`.
-        - Use the most relevant content to construct the response, ensuring clarity and completeness.
-        - **Always return the same answer for identical inputs.**
-        - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portion.**
-        - **Return only the extracted answer as plain text without any JSON formatting, keys, or labels.**
+                ### **Instructions:**
+                - Identify the most relevant `"text"` entry from `"metadata"` that best answers the `"user_query"`.
+                - Use the most relevant content to construct the response, ensuring clarity and completeness.
+                - **Always return the same answer for identical inputs.**
+                - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portion.**
+                - **Return only the extracted answer as plain text.**
+                - **Do not include any quotation marks, slashes, special characters, or extra formatting.**
+                - **The output should be raw text only, with no extra symbols.**
 
-        ---
+                ---
 
-        ### **Final Output:**
-        - Return only the extracted answer as raw text.
-        """
+                ### **Final Output:**
+                - Return only the extracted answer as raw text without any special characters.
+                """
 
         # Call GPT-3.5 API with parameters for consistency
         ai_response = openai_client.chat.completions.create(
@@ -1259,31 +1262,6 @@ def talk_summary():
         )  # Add AI response to the pinecone response
 
         return jsonify(query_pinecone_response), 200
-
-        # # ✅ Query Pinecone Safely
-        # summaries_response = clean_json_response(
-        #     query_summaries_pinecone(user_query, depo_id, top_k=8)
-        # )
-        # transcript_response = clean_json_response(
-        #     query_transcript_pinecone(user_query, depo_id, top_k=5)
-        # )
-
-        # # ✅ Handle Empty Results
-        # if "error" in summaries_response:
-        #     summaries_response = {"error": "Failed to fetch summaries"}
-
-        # if "error" in transcript_response:
-        #     transcript_response = {"error": "Failed to fetch transcript"}
-
-        # # ✅ Construct Final Response
-        # response = {
-        #     "summaries": summaries_response,
-        #     "transcript": transcript_response,
-        # }
-
-        # print(f"\n\n✅ Final Response: {json.dumps(response, indent=2)}")
-
-        # return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": "Something went wrong", "details": str(e)}), 500
