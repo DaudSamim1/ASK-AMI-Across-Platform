@@ -97,7 +97,7 @@ def generate_embedding(text):
     try:
         text = text.replace("\n", " ").replace("\r", " ")
         response = openai_client.embeddings.create(
-            input=[text], model="text-embedding-ada-002"
+            input=[text], model="text-embedding-3-small"
         )
         return response.data[0].embedding
     except Exception as e:
@@ -199,7 +199,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
             matched_results, isSummary=True, isTranscript=True
         )
 
-        print(f"Grouped Results: {grouped_result} \n\n\n")
+        # print(f"Grouped Results: {grouped_result} \n\n\n")
 
         custom_response = []  # Custom response
 
@@ -260,10 +260,33 @@ def query_pinecone(query_text, depo_id, top_k=5):
                     }
                 )
 
+        text_list = [entry["text"] for entry in custom_response]
+        # print(f"\n\n\n\n\nText List: {text_list} \n\n\n\n\n")
+
+        # Instantiate the Pinecone client
+        pc = Pinecone(api_key=PINECONE_API_KEY)
+
+        from pinecone import RerankModel
+
+        # Perform reranking to get top_n results based on the query
+        reranked_results = pc.inference.rerank(
+            model=RerankModel.Bge_Reranker_V2_M3,
+            query=query_text,
+            documents=text_list,
+            top_n=5,
+            return_documents=True,
+        )
+
+        rerank_response = []
+        for rank_match in reranked_results.data:
+            index = rank_match.index
+            response = custom_response[index]
+            rerank_response.append(response)
+
         response = {
             "user_query": query_text,
             "depoIQ_ID": depo_id,
-            "metadata": custom_response,
+            "metadata": rerank_response,
         }
 
         return response
@@ -331,194 +354,6 @@ def get_answer_from_AI(response):
     except Exception as e:
         print(f"Error querying Pinecone: {e}")
         return str(e)
-
-
-# # Function to query Pinecone and match summaries
-# def query_summaries_pinecone(query_text, depo_id=None, top_k=3):
-#     try:
-#         print(
-#             f"\n🔍 Querying Pinecone for summaries: '{query_text}' (depo_id: {depo_id})"
-#         )
-
-#         # Generate query embedding
-#         query_vector = generate_embedding(query_text)
-
-#         if not query_vector:
-#             return json.dumps(
-#                 {"status": "error", "message": "Failed to generate query embedding."}
-#             )
-
-#         # Define filter criteria (search within `depo_id`)
-#         filter_criteria = {}
-#         if depo_id:
-#             # Add depo_id filter
-#             filter_criteria["depoIQ_ID"] = depo_id
-#             # make sure not to include transcripts
-#             filter_criteria["category"] = {"$ne": "transcript"}
-
-#         # Search in Pinecone
-#         results = depoIndex.query(
-#             vector=query_vector,
-#             top_k=top_k,
-#             include_metadata=True,
-#             filter=filter_criteria,
-#         )
-
-#         if not results["matches"] or not any(results["matches"]):
-#             print("\n\n No matches found. for summaries")
-#             return json.dumps({"status": "Not Found", "message": "No matches found."})
-
-#         matched_results = [
-#             {
-#                 "category": match["metadata"]["category"],
-#                 "db_category": snake_to_camel(
-#                     match["metadata"]["category"], isSummary=False
-#                 ),
-#                 "db_category_2": snake_to_camel(match["metadata"]["category"]),
-#                 "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
-#                 "chunk_index": match["metadata"].get("chunk_index", None),
-#             }
-#             for match in results.get("matches", [])
-#         ]
-
-#         grouped_result = group_by_depoIQ_ID(
-#             matched_results, isSummary=True, isTranscript=False
-#         )
-
-#         custom_response = []
-
-#         for depData in matched_results:
-#             depo_id = depData["depoIQ_ID"]
-#             category = depData["db_category"]
-#             category_2 = depData["db_category_2"]
-#             chunk_index = int(depData["chunk_index"])
-#             summary = grouped_result.get(depo_id, {})
-
-#             db_text = (
-#                 summary.get(category)
-#                 if category in summary
-#                 else summary.get(category_2, "No data found")
-#             )
-
-#             text = extract_text(db_text["text"])
-#             text_chunks = split_into_chunks(text)
-#             text = text_chunks[chunk_index] if chunk_index < len(text_chunks) else text
-
-#             custom_response.append(
-#                 {
-#                     "depoIQ_ID": depo_id,
-#                     "category": depData["category"],
-#                     "chunk_index": chunk_index,
-#                     "text": text,
-#                 }
-#             )
-
-#         # Construct initial response
-#         response = {
-#             "answer_for_query": (
-#                 custom_response[0]["text"] if custom_response else "No answer found"
-#             ),
-#             "user_query": query_text,
-#             "metadata": custom_response,
-#         }
-
-#         # return json.loads(json.dumps(response))
-
-#         # Define GPT prompt
-#         prompt = f"""
-#                     You are an AI assistant that organizes and sorts JSON data efficiently.
-
-#                     Your task is to **analyze and sort the given JSON data** based on its relevance to the `user_query`
-#                     and return **only the top 3 most relevant results** while maintaining the original structure.
-
-#                     ---
-
-#                     ### **Given Data:**
-#                     {response}
-
-#                     ---
-
-#                     ### **Instructions:**
-#                     - You will receive a **JSON payload** containing:
-#                     - A **user_query**
-#                     - Multiple **metadata entries**, each containing a `"text"` field.
-#                     - **Your goal is to determine which `"text"` field best answers the `user_query` and rank the results accordingly.**
-#                     - **Select the most relevant `"text"`** from `metadata` and place it **exactly as it appears** in `"answer_for_query"`.
-#                     - **Do NOT generate your own text.**
-#                     - **Only copy the most relevant `text` from metadata.**
-#                     - **Sort the top 3 most relevant results** in `"metadata"`, ensuring the best response is at the top.
-#                     - **DO NOT modify the JSON structure**. The only allowed modifications are:
-#                     - Assigning the most relevant `"text"` **exactly as it is** to `"answer_for_query"`.
-#                     - Reordering the `"metadata"` array to prioritize relevance.
-#                     - Ensuring only the **top 3 most relevant results** remain in `"metadata"`.
-
-#                     ---
-
-#                     ### **Sorting Criteria:**
-#                     - **Highest Relevance:** The `"text"` that directly and accurately answers the `"user_query"` should be placed in `"answer_for_query"`, without modifications.
-#                     - **Top 3 Results:** The `"metadata"` array should contain only the **three** most relevant entries.
-#                     - **If relevance is equal, prioritize the `"text"` that provides more details and context.**
-#                     - **Do not include irrelevant, vague, or unrelated responses.**
-#                     - **Do not summarize, rewrite, or alter any text. Return the original content as it is.**
-
-#                     ---
-#                     """
-
-#         # Call GPT-4o-mini API
-#         ai_response = openai_client.chat.completions.create(
-#             model="gpt-4o-mini",
-#             messages=[
-#                 {
-#                     "role": "system",
-#                     "content": "You are an AI assistant that extracts precise answers from multiple given documents efficiently.",
-#                 },
-#                 {"role": "user", "content": prompt},
-#             ],
-#             max_tokens=2000,
-#             response_format={
-#                 "type": "json_schema",
-#                 "json_schema": {
-#                     "name": "query_response",
-#                     "description": "A structured response for a query and its matched answers.",
-#                     "schema": {
-#                         "type": "object",
-#                         "properties": {
-#                             "answer_for_query": {"type": "string"},
-#                             "user_query": {"type": "string"},
-#                             "metadata": {
-#                                 "type": "array",
-#                                 "items": {
-#                                     "type": "object",
-#                                     "properties": {
-#                                         "category": {"type": "string"},
-#                                         "chunk_index": {"type": "string"},
-#                                         "depoIQ_ID": {"type": "string"},
-#                                         "text": {"type": "string"},
-#                                     },
-#                                     "required": [
-#                                         "category",
-#                                         "chunk_index",
-#                                         "depoIQ_ID",
-#                                         "text",
-#                                     ],
-#                                 },
-#                             },
-#                         },
-#                         "required": ["answer_for_query", "user_query", "metadata"],
-#                     },
-#                 },
-#             },
-#         )
-
-#         # Convert response to JSON
-#         ai_json_response = json.loads(ai_response.choices[0].message.content.strip())
-
-#         # return json.dumps(ai_json_response, indent=4)
-#         return clean_json_response(ai_json_response)
-
-#     except Exception as e:
-#         print(f"Error querying Pinecone: {e}")
-#         return {"status": "error", "message": str(e)}
 
 
 # Function to get Depo from DepoIQ_ID
@@ -819,213 +654,6 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
     return len(vectors_to_upsert), skipped_chunks
 
 
-# def query_transcript_pinecone(query_text, depo_id, top_k=5):
-#     """Queries Pinecone for transcript data and finds the best match directly."""
-#     try:
-#         print(
-#             f"\n🔍 Querying Pinecone for transcript: '{query_text}' (depo_id: {depo_id})"
-#         )
-
-#         # Generate embedding for the query
-#         query_vector = generate_embedding(query_text)
-
-#         if not query_vector:
-#             return json.dumps(
-#                 {"status": "error", "message": "Failed to generate query embedding."}
-#             )
-
-#         # Define filter criteria to search within the specific depo_id
-#         filter_criteria = {"depoIQ_ID": depo_id, "category": "transcript"}
-
-#         # Search in Pinecone
-#         results = depoIndex.query(
-#             vector=query_vector,
-#             top_k=top_k,
-#             include_metadata=True,
-#             filter=filter_criteria,
-#         )
-
-#         if not results["matches"] or not any(results["matches"]):
-#             print("\n\n No matches found. for transcript")
-#             return json.dumps({"status": "Not Found", "message": "No matches found."})
-
-#         matched_results = [
-#             {
-#                 "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
-#                 "category": match["metadata"]["category"],
-#                 "chunk_index": match["metadata"].get("chunk_index", None),
-#                 "score": match["score"],
-#             }
-#             for match in results.get("matches", [])
-#         ]
-
-#         grouped_result = group_by_depoIQ_ID(
-#             matched_results, isSummary=False, isTranscript=True
-#         )
-
-#         custom_match = []
-
-#         for match in matched_results:
-#             depoIQ_ID = match["depoIQ_ID"]
-#             category = match["category"]
-#             chunk_index = match["chunk_index"]  # Pages range eg "16-18"
-#             start_page, end_page = map(int, chunk_index.split("-"))
-#             # start_page = int(match["start_page"])
-#             # end_page = int(match["end_page"])
-#             transcript = grouped_result.get(depoIQ_ID, {})
-
-#             pages = [
-#                 page
-#                 for page in transcript
-#                 if start_page <= page["pageNumber"] <= end_page
-#             ]
-
-#             # Extract the text from the retrieved pages
-
-#             chunk_text = {}
-
-#             for page in pages:
-#                 page_number = page["pageNumber"]
-#                 pageLines = page.get("lines", [])
-#                 pageLines = [
-#                     line["lineText"].strip()
-#                     for line in pageLines
-#                     if line["lineText"].strip()
-#                 ]
-#                 chunk_text[page_number] = " ".join(pageLines)
-
-#             custom_match.append(
-#                 {
-#                     "depoIQ_ID": depoIQ_ID,
-#                     "category": category,
-#                     "chunk_index": chunk_index,
-#                     "start_page": start_page,
-#                     "end_page": end_page,
-#                     "chunk_text": chunk_text,
-#                 }
-#             )
-
-#         # Construct response
-#         response = {"query_text": query_text, "metadata": custom_match}
-
-#         # return json.loads(json.dumps(response))
-
-#         # Example response structure
-#         prompt = f"""
-#                 You are an AI assistant that extracts and organizes transcript data efficiently.
-
-#                 Your task is to **analyze and sort the given transcript JSON data** based on its relevance to the `user_query`
-#                 and return **only the top 3 most relevant responses** in `"metadata"` while maintaining the original structure.
-
-#                 Additionally, extract the **most relevant page's data** from `"chunk_text"` and place it in `"answer_for_query"`.
-#                 The **original structure of `"metadata"` must remain unchanged**, except for sorting based on relevance.
-
-#                 ---
-
-#                 ### **Given Data:**
-#                 {response}
-
-#                 ---
-
-#                 ### **Instructions:**
-#                 - You will receive a **JSON payload** containing:
-#                 - A **user_query**
-#                 - Multiple **metadata entries**, each containing:
-#                     - A `"depoIQ_ID"`
-#                     - `"start_page"` and `"end_page"`
-#                     - A `"chunk_text"` object, where keys represent page numbers and values contain transcript text.
-
-#                 - **Your goal is to determine which page best answers the `user_query` and return its exact `"chunk_text"` in `"answer_for_query"`**.
-#                 - **Ensure `"answer_for_query"` contains the exact text from the most relevant `"chunk_text"` page**.
-#                 - **Extract the top three most relevant metadata entries and ONLY sort them** without modifying any data.
-#                 - **DO NOT alter, modify, or rewrite `"chunk_text"` in `"metadata"`—it must remain exactly the same.**
-#                 - **Include `"start_page"` and `"end_page"` in the main response, which should match the values from the most relevant `"chunk_text"`.**
-#                 - **Verify multiple times** that `"chunk_text"` in `"metadata"` is **unchanged and complete** before returning the final output.
-#                 - **DO NOT truncate, summarize, or alter any text.** The original structure must be preserved.
-#                 - **Ensure that metadata contains exactly THREE entries** in the response.
-
-#                 ---
-
-#                 ### **Sorting Criteria:**
-#                 - **Highest Relevance:** The `"chunk_text"` that directly and accurately answers the `"user_query"` should be placed in `"answer_for_query"`, using the **most relevant page only**.
-#                 - **Metadata Sorting:** **Sort the `"metadata"` array** by relevance, keeping all entries unchanged except for order.
-#                 - **Ensure that the selected `"answer_for_query"` comes from the correct `"chunk_text"` in `"metadata"`**.
-#                 - **DO NOT modify or truncate `"chunk_text"` in `"metadata"`.**
-#                 - **Return exactly THREE metadata entries, even if more exist.**
-
-
-#                 ---
-#                 """
-
-#         # Call GPT-4o-mini API
-#         ai_response = openai_client.chat.completions.create(
-#             model="gpt-4o-mini",
-#             messages=[
-#                 {
-#                     "role": "system",
-#                     "content": "You are an AI assistant that extracts precise answers from multiple given transcripts efficiently.",
-#                 },
-#                 {"role": "user", "content": prompt},
-#             ],
-#             max_tokens=4000,
-#             response_format={
-#                 "type": "json_schema",
-#                 "json_schema": json.loads(
-#                     """
-#                 {
-#                     "name": "query_response",
-#                     "description": "A structured response for a query and its matched answers.",
-#                     "schema": {
-#                         "type": "object",
-#                         "properties": {
-#                             "answer_for_query": { "type": "string" },
-#                             "user_query": { "type": "string" },
-#                             "start_page": { "type": "integer" },
-#                             "end_page": { "type": "integer" },
-#                             "metadata": {
-#                                 "type": "array",
-#                                 "items": {
-#                                     "type": "object",
-#                                     "properties": {
-#                                         "depoIQ_ID": { "type": "string" },
-#                                         "start_page": { "type": "integer" },
-#                                         "end_page": { "type": "integer" },
-#                                         "chunk_text": {
-#                                             "type": "object",
-#                                             "additionalProperties": { "type": "string" }
-#                                         }
-#                                     },
-#                                     "required": ["depoIQ_ID", "start_page", "end_page", "chunk_text"]
-#                                 },
-#                                 "minItems": 3,
-#                                 "maxItems": 3
-#                             }
-#                         },
-#                         "required": ["answer_for_query", "user_query", "start_page", "end_page", "metadata"]
-#                     }
-#                 }
-#                 """
-#                 ),
-#             },
-#         )
-
-#         print("Successfull response from GPT-4o-mini modal ->", ai_response)
-
-#         # Convert response to JSON
-#         ai_json_response = clean_json_response(
-#             ai_response.choices[0].message.content.strip()
-#         )
-
-#         print(f"AI JSON Response: ---> {ai_json_response}")
-
-#         # return json.dumps(ai_json_response, indent=4)
-#         return ai_json_response
-
-#     except Exception as e:
-#         print(f"❌ Error querying Pinecone: {e}")
-#         return {"status": "error", "message": str(e)}
-
-
 # Function to generate add depo summaries to pinecone
 def add_depo_summaries(depo_summary, depoIQ_ID):
     try:
@@ -1096,34 +724,6 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
 
     except Exception as e:
         return {"status": "error", "message": "Something went wrong", "details": str(e)}
-
-
-# def clean_json_response(response):
-#     """Ensure the response is valid JSON"""
-#     try:
-#         if isinstance(response, requests.Response):
-#             response_text = response.text
-#         elif isinstance(response, dict):
-#             return response  # Already valid
-#         elif isinstance(response, str):
-#             response_text = response
-#         else:
-#             return {"error": "Unexpected response format"}
-
-#         # ✅ Ensure JSON format
-#         response_text = response_text.replace("\n", " ").replace("\r", " ")
-
-#         # Debugging: Print partial response for analysis
-#         print(f"🔍 Raw JSON Before Parsing: {response_text[:500]}...")
-
-#         # Try parsing JSON safely
-#         parsed_json = json.loads(response_text)
-
-#         return parsed_json  # ✅ Return properly formatted JSON
-
-#     except json.JSONDecodeError as e:
-#         print(f"❌ JSON Parsing Error: {e}")
-#         return {"error": "Invalid JSON received", "details": str(e)}
 
 
 # 🏠 Home Endpoint for testing
@@ -1249,7 +849,7 @@ def talk_summary():
             return jsonify({"error": "Missing depo_id or user_query"}), 400
 
         # ✅ Query Pinecone Safely
-        query_pinecone_response = query_pinecone(user_query, depo_id, top_k=5)
+        query_pinecone_response = query_pinecone(user_query, depo_id, top_k=8)
 
         print(
             f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"
