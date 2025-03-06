@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import re
 import json
 from bs4 import BeautifulSoup
+from bson import ObjectId
 
 # Load environment variables from .env file
 load_dotenv()
@@ -146,10 +147,10 @@ def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
 
 
 # Function to query Pinecone and match return top k results
-def query_pinecone(query_text, depo_id, top_k=5):
+def query_pinecone(query_text, depo_ids, top_k=5):
     try:
         print(
-            f"\n🔍 Querying Pinecone for : query_text-> '{query_text}' (depo_id->: {depo_id})\n\n\n"
+            f"\n🔍 Querying Pinecone for : query_text-> '{query_text}' (depo_id->: {depo_ids})\n\n\n"
         )
 
         # Generate query embedding
@@ -163,9 +164,11 @@ def query_pinecone(query_text, depo_id, top_k=5):
         # Define filter criteria (search within `depo_id`)
         transcript_category = "transcript"
         filter_criteria = {}
-        if depo_id:
+        if depo_ids or len(depo_ids) > 0:
+
             # Add depo_id filter
-            filter_criteria["depoIQ_ID"] = depo_id
+            # filter_criteria["depoIQ_ID"] = depo_id
+            filter_criteria["depoIQ_ID"] = {"$in": depo_ids}
             # filter_criteria["category"] = transcript_category
             # filter_criteria["category"] = {"$ne": transcript_category}
 
@@ -228,7 +231,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
                 )
                 custom_response.append(
                     {
-                        # "depoIQ_ID": depoIQ_ID,
+                        "depoIQ_ID": depoIQ_ID,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
@@ -246,7 +249,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
                 ]
                 custom_response.append(
                     {
-                        # "depoIQ_ID": depoIQ_ID,
+                        "depoIQ_ID": depoIQ_ID,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": " ".join(
@@ -273,7 +276,7 @@ def query_pinecone(query_text, depo_id, top_k=5):
             model=RerankModel.Bge_Reranker_V2_M3,
             query=query_text,
             documents=text_list,
-            top_n=5,
+            top_n=8,
             return_documents=True,
         )
 
@@ -283,9 +286,11 @@ def query_pinecone(query_text, depo_id, top_k=5):
             response = custom_response[index]
             rerank_response.append(response)
 
+        grouped_result_keys = list(grouped_result.keys())
+
         response = {
             "user_query": query_text,
-            "depoIQ_ID": depo_id,
+            "depoIQ_ID": grouped_result_keys,
             "metadata": rerank_response,
         }
 
@@ -306,6 +311,7 @@ def get_answer_from_AI(response):
                 - Analyze the provided `"metadata"` and generate a direct, relevant answer to the `"user_query"`. 
                 - Use the `"text"` field in `"metadata"` to form the most accurate response.
                 - Ensure the generated response directly addresses the `"user_query"` without altering the original `"text"` in `"metadata"`.
+                - Reference the source by indicating which `"metadata"` entries the answer was extracted from.
 
                 ---
 
@@ -315,18 +321,21 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **Instructions:**
-                - Identify the most relevant `"text"` entry from `"metadata"` that best answers the `"user_query"`.
+                - Identify the most relevant `"text"` entries from `"metadata"` that best answer the `"user_query"`.
                 - Use the most relevant content to construct the response, ensuring clarity and completeness.
                 - **Always return the same answer for identical inputs.**
                 - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portion.**
-                - **Return only the extracted answer as plain text.**
+                - **Return only the extracted answer as plain text, followed by the metadata reference in square brackets.**
                 - **Do not include any quotation marks, slashes, special characters, or extra formatting.**
                 - **The output should be raw text only, with no extra symbols.**
+                - **If multiple metadata sources are used, format the reference as `[metadata: X and metadata: Y]`, where X and Y are the index positions of the metadata entries.**
 
                 ---
 
                 ### **Final Output:**
-                - Return only the extracted answer as raw text without any special characters.
+                - Return only the extracted answer as raw text.
+                - Append metadata references in the format `[metadata: X]`, where X is the index position of the metadata entry.
+                - If multiple metadata entries are used, list them as `[metadata: X and metadata: Y]`.
                 """
 
         # Call GPT-3.5 API with parameters for consistency
@@ -817,7 +826,7 @@ def add_depo(depoIQ_ID):
 @app.route("/depo/talk", methods=["POST"])
 def talk_summary():
     """
-    Talk to depo summaries & transcript by depo_id
+    Talk to depo summaries & transcript by depo_ids
     ---
     tags:
       - Depo
@@ -828,8 +837,10 @@ def talk_summary():
         schema:
           type: object
           properties:
-            depo_id:
-              type: string
+            depo_ids:
+              type: array
+              items:
+                type: string
             user_query:
               type: string
     responses:
@@ -841,15 +852,24 @@ def talk_summary():
         if not data:
             return jsonify({"error": "Invalid request, JSON body required"}), 400
 
-        depo_id = data.get("depo_id")
+        depo_ids = data.get("depo_ids")
         user_query = data.get("user_query")
 
-        # Check if depo_id and user_query are provided
-        if not depo_id or not user_query:
-            return jsonify({"error": "Missing depo_id or user_query"}), 400
+        if not user_query:
+            return jsonify({"error": "Missing user_query"}), 400
+
+        if not depo_ids or len(depo_ids) == 0:
+            return jsonify({"error": "Missing depo_ids list"}), 400
+
+        if len(depo_ids) > 8:
+            return jsonify({"error": "Too many depo_ids, max 8"}), 400
+        # check all ids are valid and mongo Id
+        for depo_id in depo_ids:
+            if not ObjectId.is_valid(depo_id):
+                return jsonify({"error": "Invalid depo_id " + depo_id}), 400
 
         # ✅ Query Pinecone Safely
-        query_pinecone_response = query_pinecone(user_query, depo_id, top_k=8)
+        query_pinecone_response = query_pinecone(user_query, depo_ids, top_k=10)
 
         print(
             f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"
