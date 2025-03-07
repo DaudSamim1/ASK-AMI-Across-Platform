@@ -147,7 +147,7 @@ def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
 
 
 # Function to query Pinecone and match return top k results
-def query_pinecone(query_text, depo_ids, top_k=5):
+def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
     try:
         print(
             f"\n🔍 Querying Pinecone for : query_text-> '{query_text}' (depo_id->: {depo_ids})\n\n\n"
@@ -164,13 +164,9 @@ def query_pinecone(query_text, depo_ids, top_k=5):
         # Define filter criteria (search within `depo_id`)
         transcript_category = "transcript"
         filter_criteria = {}
-        if depo_ids or len(depo_ids) > 0:
-
+        if depo_ids and len(depo_ids) > 0:
             # Add depo_id filter
-            # filter_criteria["depoIQ_ID"] = depo_id
             filter_criteria["depoIQ_ID"] = {"$in": depo_ids}
-            # filter_criteria["category"] = transcript_category
-            # filter_criteria["category"] = {"$ne": transcript_category}
 
         # Search in Pinecone
         results = depoIndex.query(
@@ -276,7 +272,7 @@ def query_pinecone(query_text, depo_ids, top_k=5):
             model=RerankModel.Bge_Reranker_V2_M3,
             query=query_text,
             documents=text_list,
-            top_n=8,
+            top_n=top_k if is_unique else 8,
             return_documents=True,
         )
 
@@ -286,13 +282,46 @@ def query_pinecone(query_text, depo_ids, top_k=5):
             response = custom_response[index]
             rerank_response.append(response)
 
-        grouped_result_keys = list(grouped_result.keys())
+        if is_unique:
+            unique_set_response = {}
+            for entry in rerank_response:
+                depoIQ_ID = entry["depoIQ_ID"]
+                if depoIQ_ID not in unique_set_response:
+                    unique_set_response[depoIQ_ID] = []
+                unique_set_response[depoIQ_ID].append(entry)
 
-        response = {
-            "user_query": query_text,
-            "depoIQ_ID": grouped_result_keys,
-            "metadata": rerank_response,
-        }
+            unique_set_response_keys = list(unique_set_response.keys())
+
+            final_response = []
+
+            # Ensure we have exactly 8 entries in final_response
+            while len(final_response) < 8:
+                for depoIQ_ID in unique_set_response_keys:
+                    if len(final_response) >= 8:
+                        break
+                    try:
+                        final_response.append(unique_set_response[depoIQ_ID].pop(0))
+                        # if not unique_set_response[depoIQ_ID]:
+                        #     unique_set_response_keys.remove(depoIQ_ID)
+                    except IndexError:
+                        continue
+
+            return {
+                "user_query": query_text,
+                "depoIQ_ID": unique_set_response_keys,
+                "metadata": final_response,
+                "is_unique": is_unique,
+            }
+        else:
+
+            grouped_result_keys = list(grouped_result.keys())
+
+            response = {
+                "user_query": query_text,
+                "depoIQ_ID": grouped_result_keys,
+                "metadata": rerank_response,
+                "is_unique": is_unique,
+            }
 
         return response
 
@@ -826,7 +855,7 @@ def add_depo(depoIQ_ID):
 @app.route("/depo/talk", methods=["POST"])
 def talk_summary():
     """
-    Talk to depo summaries & transcript by depo_ids
+    Talk to depo summaries & transcript by depoIQ_IDs
     ---
     tags:
       - Depo
@@ -837,12 +866,14 @@ def talk_summary():
         schema:
           type: object
           properties:
-            depo_ids:
+            depoIQ_IDs:
               type: array
               items:
                 type: string
             user_query:
               type: string
+            is_unique:
+              type: boolean
     responses:
       200:
         description: Returns the success message
@@ -852,24 +883,33 @@ def talk_summary():
         if not data:
             return jsonify({"error": "Invalid request, JSON body required"}), 400
 
-        depo_ids = data.get("depo_ids")
+        depoIQ_IDs = data.get("depoIQ_IDs")
         user_query = data.get("user_query")
+        is_unique = data.get("is_unique", False)
 
-        if not user_query:
-            return jsonify({"error": "Missing user_query"}), 400
+        if depoIQ_IDs:
+            if not user_query:
+                return jsonify({"error": "Missing user_query"}), 400
 
-        if not depo_ids or len(depo_ids) == 0:
-            return jsonify({"error": "Missing depo_ids list"}), 400
+            if len(depoIQ_IDs) == 0:
+                return jsonify({"error": "Missing depoIQ_IDs list"}), 400
 
-        if len(depo_ids) > 8:
-            return jsonify({"error": "Too many depo_ids, max 8"}), 400
-        # check all ids are valid and mongo Id
-        for depo_id in depo_ids:
-            if not ObjectId.is_valid(depo_id):
-                return jsonify({"error": "Invalid depo_id " + depo_id}), 400
+            if len(depoIQ_IDs) > 8:
+                return jsonify({"error": "Too many depoIQ_IDs, max 8"}), 400
+            # check all ids are valid and mongo Id
+            for depo_id in depoIQ_IDs:
+                if not ObjectId.is_valid(depo_id):
+                    return jsonify({"error": "Invalid depo_id " + depo_id}), 400
+            depoIQ_IDs_array_length = len(depoIQ_IDs) * 3
+        else:
+            depoIQ_IDs_array_length = 24
+
+        top_k = depoIQ_IDs_array_length if is_unique else 10
 
         # ✅ Query Pinecone Safely
-        query_pinecone_response = query_pinecone(user_query, depo_ids, top_k=10)
+        query_pinecone_response = query_pinecone(
+            user_query, depoIQ_IDs, top_k=top_k, is_unique=is_unique
+        )
 
         print(
             f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"

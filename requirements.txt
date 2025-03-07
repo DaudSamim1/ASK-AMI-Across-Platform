@@ -7,3 +7,4 @@ openai
 numpy
 python-dotenv
 beautifulsoup4
+pymongo
