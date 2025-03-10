@@ -33,6 +33,14 @@ app = Flask(__name__)
 swagger = Swagger(app)
 
 
+@app.after_request
+def disable_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    return response
+
+
 # Initialize Pinecone and create the index if it doesn't exist
 def initialize_pinecone_index(index_name):
     """Initialize Pinecone and create the index if it doesn't exist."""
@@ -179,7 +187,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         # Check if any matches found
         if not results["matches"] or not any(results["matches"]):
             print("\n\n No matches found. in depo pinecone \n\n\n")
-            return json.dumps({"status": "Not Found", "message": "No matches found."})
+            return {"status": "Not Found", "message": "No matches found."}
 
         # Extract matched results
         matched_results = [
@@ -307,6 +315,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                         continue
 
             return {
+                "status": "success",
                 "user_query": query_text,
                 "depoIQ_ID": unique_set_response_keys,
                 "metadata": final_response,
@@ -317,6 +326,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
             grouped_result_keys = list(grouped_result.keys())
 
             response = {
+                "status": "success",
                 "user_query": query_text,
                 "depoIQ_ID": grouped_result_keys,
                 "metadata": rerank_response,
@@ -915,11 +925,26 @@ def talk_summary():
             f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"
         )
 
-        ai_resposne = get_answer_from_AI(query_pinecone_response)
+        if query_pinecone_response["status"] == "Not Found":
+            print(f"\n\n🔍 No matches found for the query and return error \n\n\n\n")
+            return (
+                jsonify(
+                    {
+                        "error": "No matches found for the query",
+                        "details": "No matches found",
+                        "status": "Not Found",
+                    }
+                ),
+                200,
+            )
+        else:
+            ai_resposne = get_answer_from_AI(query_pinecone_response)
 
-        query_pinecone_response["answer"] = str(
-            ai_resposne
-        )  # Add AI response to the pinecone response
+            print(f"\n\n✅ AI Response: {ai_resposne} \n\n\n\n")
+
+            query_pinecone_response["answer"] = str(
+                ai_resposne
+            )  # Add AI response to the pinecone response
 
         return jsonify(query_pinecone_response), 200
 
