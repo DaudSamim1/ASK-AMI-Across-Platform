@@ -350,7 +350,7 @@ def get_answer_from_AI(response):
                 - Analyze the provided `"metadata"` and generate a direct, relevant answer to the `"user_query"`. 
                 - Use the `"text"` field in `"metadata"` to form the most accurate response.
                 - Ensure the generated response directly addresses the `"user_query"` without altering the original `"text"` in `"metadata"`.
-                - Reference the source by indicating which `"metadata"` entries the answer was extracted from.
+                - Reference the source by indicating all `"metadata"` entries the answer was extracted from.
 
                 ---
 
@@ -360,22 +360,34 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **Instructions:**
-                - Identify the most relevant `"text"` entries from `"metadata"` that best answer the `"user_query"`.
+                - Identify **all** relevant `"text"` entries from `"metadata"` that contribute to answering the `"user_query"`.
                 - Use the most relevant content to construct the response, ensuring clarity and completeness.
                 - **Always return the same answer for identical inputs.**
                 - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portion.**
-                - **Return only the extracted answer as plain text, followed by the metadata reference in square brackets.**
-                - **Do not include any quotation marks, slashes, special characters, or extra formatting.**
-                - **The output should be raw text only, with no extra symbols.**
-                - **If multiple metadata sources are used, format the reference as `[metadata: X and metadata: Y]`, where X and Y are the index positions of the metadata entries.**
+                - **Return only the extracted answer as plain text, followed by `&&metadataRef = [X, Y, Z]`.**
+                - **Ensure that `&&metadataRef =` is always included, even if no relevant metadata is found.**
+                - **If multiple metadata sources contribute to the answer, list all of their respective index positions from the metadata array.**
+                - **DO NOT include metadata IDs—only their index positions.**
+                - **If no relevant metadata is found, return "No relevant information available." followed by `&&metadataRef = []`.**
+                - **DO NOT OMIT `&&metadataRef =` UNDER ANY CIRCUMSTANCES. IT MUST ALWAYS BE PRESENT.**
+                - **The format must strictly be: `<Extracted Answer Here> &&metadataRef = [X, Y, Z]`, where X, Y, Z are integer indices of the metadata array.**
 
                 ---
 
-                ### **Final Output:**
-                - Return only the extracted answer as raw text.
-                - Append metadata references in the format `[metadata: X]`, where X is the index position of the metadata entry.
-                - If multiple metadata entries are used, list them as `[metadata: X and metadata: Y]`.
-                """
+                ### **Final Output Format (Must Follow Exactly):**
+                ```
+                <Extracted Answer Here> &&metadataRef = [X, Y, Z]
+                ```
+                - **Example of Correct Output:**  
+                  ```
+                  Dr. Mark Strassberg, a neurologist, was deposed regarding his expert testimony in the case involving plaintiff Brenna Duggan against the City of Walnut Creek. He was retained by the defense and testified about his forensic and clinical practice, emphasizing that a significant portion of his forensic work is for defendants. &&metadataRef = [5, 12, 20]
+                  ```
+                - **If no relevant metadata is found, return:**
+                  ```
+                  No relevant information available. &&metadataRef = []
+                  ```
+
+            """
 
         # Call GPT-3.5 API with parameters for consistency
         ai_response = openai_client.chat.completions.create(
@@ -840,14 +852,24 @@ def add_depo(depoIQ_ID):
         # Process & store transcript
         transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
 
-        # Generate detailed response
-        response = {
+        # Merge responses
+        merged_response = {
             "status": "success",
-            "depo": depo_response,
-            "transcript": transcript_response,
+            "depoIQ_ID": depoIQ_ID,
+            "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "summary": {
+                "total_inserted": depo_response["data"]["total_inserted"],
+                "skipped_count": depo_response["data"]["skipped_count"],
+                "skipped_details": depo_response["data"]["skipped_details"],
+            },
+            "transcript": {
+                "total_inserted": transcript_response["data"]["total_inserted"],
+                "skipped_count": transcript_response["data"]["skipped_count"],
+                "skipped_details": transcript_response["data"]["skipped_details"],
+            },
         }
 
-        return jsonify(response), 200
+        return jsonify(merged_response), 200
 
     except Exception as e:
         return (
