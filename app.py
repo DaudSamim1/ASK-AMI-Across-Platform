@@ -736,12 +736,16 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
             total_inserted += inserted_count
             skipped_sub_categories[category] = skipped_chunks
 
-        status = "success" if total_inserted > 0 else "Not Found"
+        if total_inserted > 0:
+            status = "success"
+        elif skipped_sub_categories:
+            status = "warning"
+        else:
+            status = "error"
 
-        # Response
         response = {
             "status": status,
-            "message": f"Stored {total_inserted} summaries in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "message": "Summaries processed.",
             "data": {
                 "depoIQ_ID": depoIQ_ID,
                 "total_inserted": total_inserted,
@@ -760,8 +764,14 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
     try:
         if not transcript_data:
             return {
-                "status": "Not Found",
-                "message": f"No transcript data found for depoIQ_ID {depoIQ_ID}.",
+                "status": "warning",
+                "message": "No transcript data found.",
+                "data": {
+                    "depoIQ_ID": depoIQ_ID,
+                    "total_inserted": 0,
+                    "skipped_details": [],
+                    "skipped_count": 0,
+                },
             }
 
         category = "transcript"  # Default category for transcripts
@@ -771,11 +781,16 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
             depoIQ_ID, category, transcript_data
         )
 
-        status = "success" if inserted_transcripts > 0 else "Not Found"
+        if inserted_transcripts > 0:
+            status = "success"
+        elif skipped_transcripts:
+            status = "warning"
+        else:
+            status = "error"
 
         response = {
             "status": status,
-            "message": f"Stored {inserted_transcripts} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "message": "Transcripts processed.",
             "data": {
                 "depoIQ_ID": depoIQ_ID,
                 "total_inserted": inserted_transcripts,
@@ -856,25 +871,27 @@ def add_depo(depoIQ_ID):
         # Process & store transcript
         transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
 
-        status = "success" if all(
-            [depo_response["status"] == "success", transcript_response["status"] == "success"]
-        ) else "error"
+        # Determine status
+        if (
+            depo_response["status"] == "success"
+            and transcript_response["status"] == "success"
+        ):
+            status = "success"
+        elif (
+            depo_response["status"] == "warning"
+            or transcript_response["status"] == "warning"
+        ):
+            status = "warning"
+        else:
+            status = "error"
 
         # Merge responses
         merged_response = {
             "status": status,
             "depoIQ_ID": depoIQ_ID,
             "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
-            "summary": {
-                "total_inserted": depo_response["data"]["total_inserted"],
-                "skipped_count": depo_response["data"]["skipped_count"],
-                "skipped_details": depo_response["data"]["skipped_details"],
-            },
-            "transcript": {
-                "total_inserted": transcript_response["data"]["total_inserted"],
-                "skipped_count": transcript_response["data"]["skipped_count"],
-                "skipped_details": transcript_response["data"]["skipped_details"],
-            },
+            "summary": depo_response["data"],
+            "transcript": transcript_response["data"],
         }
 
         return jsonify(merged_response), 200
