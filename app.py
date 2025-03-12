@@ -736,9 +736,11 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
             total_inserted += inserted_count
             skipped_sub_categories[category] = skipped_chunks
 
+        status = "success" if total_inserted > 0 else "Not Found"
+
         # Response
         response = {
-            "status": "success",
+            "status": status,
             "message": f"Stored {total_inserted} summaries in Pinecone for depoIQ_ID {depoIQ_ID}.",
             "data": {
                 "depoIQ_ID": depoIQ_ID,
@@ -769,8 +771,10 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
             depoIQ_ID, category, transcript_data
         )
 
+        status = "success" if inserted_transcripts > 0 else "Not Found"
+
         response = {
-            "status": "success",
+            "status": status,
             "message": f"Stored {inserted_transcripts} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
             "data": {
                 "depoIQ_ID": depoIQ_ID,
@@ -852,9 +856,13 @@ def add_depo(depoIQ_ID):
         # Process & store transcript
         transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
 
+        status = "success" if all(
+            [depo_response["status"] == "success", transcript_response["status"] == "success"]
+        ) else "error"
+
         # Merge responses
         merged_response = {
-            "status": "success",
+            "status": status,
             "depoIQ_ID": depoIQ_ID,
             "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
             "summary": {
