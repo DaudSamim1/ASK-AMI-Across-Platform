@@ -347,7 +347,7 @@ def get_answer_from_AI(response):
                 You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
 
                 ### **Task:**
-                - Analyze the provided `"metadata"` and generate direct, relevant answers for each question in the `"user_query"`. 
+                - Analyze the provided `"metadata"` and generate direct, relevant answers for each question in `"user_query"`. 
                 - Use the `"text"` field in `"metadata"` to form the most accurate responses.
                 - Ensure the generated responses directly address each question in `"user_query"` without altering the original `"text"` in `"metadata"`.
                 - Reference the source by indicating all `"metadata"` entries each answer was extracted from.
@@ -360,39 +360,23 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **Instructions:**
-                - **If `"user_query"` contains a single question, return only one answer.**
-                - **If `"user_query"` contains multiple questions, return a separate structured answer for each.**
-                - **Extract only the most relevant `"text"` from `"metadata"` that directly answers each question.**
-                - **DO NOT return multiple answers for a single question unless explicitly required.**
-                - **Each answer must have its own `&&metadataRef = [X, Y, Z]` reference at the end.**
-                - **DO NOT OMIT `&&metadataRef =` UNDER ANY CIRCUMSTANCES. IT MUST ALWAYS BE PRESENT.**
-                - **If multiple metadata sources contribute to an answer, list all their respective index positions from the metadata array.**
-                - **DO NOT include metadata IDs—only their index positions.**
-                - **If no relevant metadata is found for a question, return `"No relevant information available."` followed by `&&metadataRef = []`.**
-                - **Format must strictly follow:**
-                  ```
-                  <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-                  
-                  <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
-                  ```
+                - **If `"user_query"` contains a single question, return exactly ONE answer—do NOT generate multiple answers.**
+                - **DO NOT generate `"No relevant information available."` if ANY metadata source contains relevant information.**
+                - **Only generate `"No relevant information available. &&metadataRef = []"` if there is absolutely ZERO relevant information in the metadata.**
+                - **If even one metadata source provides relevant information, DO NOT generate a second response with `"No relevant information available."`.**
+                - **Each metadata reference in `&&metadataRef = [X, Y, Z]` must ONLY include metadata sources that contain directly quoted or paraphrased information. DO NOT include irrelevant metadata sources.**
+                - **DO NOT split a single question into multiple responses unless it contains explicitly distinct queries.**
+                - **Maintain the strict output format exactly as instructed.**
 
                 ---
 
                 ### **Final Output Format (Must Follow Exactly):**
                 ```
                 <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-                
-                <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
                 ```
                 - **Example of Correct Output for Single Question:**
                   ```
                   Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
-                  ```
-                - **Example of Correct Output for Multiple Questions:**
-                  ```
-                  Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
-                  
-                  The plaintiff is represented by the Alexander Law Group, with Richard Alexander, Esq., and Kelley Uustal, with Todd Falzone, Esq. &&metadataRef = [3, 5]
                   ```
                 - **If no relevant metadata is found for a specific question, return:**
                   ```
