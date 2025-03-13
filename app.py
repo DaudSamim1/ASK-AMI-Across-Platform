@@ -347,10 +347,10 @@ def get_answer_from_AI(response):
                 You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
 
                 ### **Task:**
-                - Analyze the provided `"metadata"` and generate a direct, relevant answer to the `"user_query"`. 
-                - Use the `"text"` field in `"metadata"` to form the most accurate response.
-                - Ensure the generated response directly addresses the `"user_query"` without altering the original `"text"` in `"metadata"`.
-                - Reference the source by indicating all `"metadata"` entries the answer was extracted from.
+                - Analyze the provided `"metadata"` and generate direct, relevant answers for each question in the `"user_query"`. 
+                - Use the `"text"` field in `"metadata"` to form the most accurate responses.
+                - Ensure the generated responses directly address each question in `"user_query"` without altering the original `"text"` in `"metadata"`.
+                - Reference the source by indicating all `"metadata"` entries each answer was extracted from.
 
                 ---
 
@@ -360,29 +360,39 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **Instructions:**
-                - Identify **all** relevant `"text"` entries from `"metadata"` that contribute to answering the `"user_query"`.
-                - Use the most relevant content to construct the response, ensuring clarity and completeness.
+                - Identify **all** relevant `"text"` entries from `"metadata"` that contribute to answering **each question** in the `"user_query"`.
+                - If `"user_query"` contains **multiple questions**, generate a separate response for each question, separating them with `\\n\\n` (double newline).
+                - **Ensure that each answer has its own `&&metadataRef = [X, Y, Z]` reference at the end.**
                 - **Always return the same answer for identical inputs.**
-                - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portion.**
-                - **Return only the extracted answer as plain text, followed by `&&metadataRef = [X, Y, Z]`.**
+                - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portions.**
+                - **Return only the extracted answer(s) as plain text.**
                 - **Ensure that `&&metadataRef =` is always included, even if no relevant metadata is found.**
-                - **If multiple metadata sources contribute to the answer, list all of their respective index positions from the metadata array.**
+                - **If multiple metadata sources contribute to an answer, list all their respective index positions from the metadata array.**
                 - **DO NOT include metadata IDs—only their index positions.**
-                - **If no relevant metadata is found, return "No relevant information available." followed by `&&metadataRef = []`.**
+                - **If no relevant metadata is found for a question, return "No relevant information available." followed by `&&metadataRef = []`.**
                 - **DO NOT OMIT `&&metadataRef =` UNDER ANY CIRCUMSTANCES. IT MUST ALWAYS BE PRESENT.**
-                - **The format must strictly be: `<Extracted Answer Here> &&metadataRef = [X, Y, Z]`, where X, Y, Z are integer indices of the metadata array.**
+                - **Each answer must follow this format:**
+                  ```
+                  <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
+
+                  <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
+                  ```
 
                 ---
 
                 ### **Final Output Format (Must Follow Exactly):**
                 ```
-                <Extracted Answer Here> &&metadataRef = [X, Y, Z]
+                <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
+
+                <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
                 ```
                 - **Example of Correct Output:**  
                   ```
                   Dr. Mark Strassberg, a neurologist, was deposed regarding his expert testimony in the case involving plaintiff Brenna Duggan against the City of Walnut Creek. He was retained by the defense and testified about his forensic and clinical practice, emphasizing that a significant portion of his forensic work is for defendants. &&metadataRef = [5, 12, 20]
+
+                  The City of Walnut Creek denied liability, arguing that there was insufficient evidence to support the plaintiff's claims. &&metadataRef = [7, 15, 22]
                   ```
-                - **If no relevant metadata is found, return:**
+                - **If no relevant metadata is found for a specific question, return:**
                   ```
                   No relevant information available. &&metadataRef = []
                   ```
