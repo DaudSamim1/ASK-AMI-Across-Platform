@@ -360,21 +360,19 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **Instructions:**
-                - Identify **all** relevant `"text"` entries from `"metadata"` that contribute to answering **each question** in the `"user_query"`.
-                - If `"user_query"` contains **multiple questions**, generate a separate response for each question, separating them with `\\n\\n` (double newline).
-                - **Ensure that each answer has its own `&&metadataRef = [X, Y, Z]` reference at the end.**
-                - **Always return the same answer for identical inputs.**
-                - **Do not modify, summarize, or rewrite `"text"` in `"metadata"`—only extract the most relevant portions.**
-                - **Return only the extracted answer(s) as plain text.**
-                - **Ensure that `&&metadataRef =` is always included, even if no relevant metadata is found.**
+                - **If `"user_query"` contains a single question, return only one answer.**
+                - **If `"user_query"` contains multiple questions, return a separate structured answer for each.**
+                - **Extract only the most relevant `"text"` from `"metadata"` that directly answers each question.**
+                - **DO NOT return multiple answers for a single question unless explicitly required.**
+                - **Each answer must have its own `&&metadataRef = [X, Y, Z]` reference at the end.**
+                - **DO NOT OMIT `&&metadataRef =` UNDER ANY CIRCUMSTANCES. IT MUST ALWAYS BE PRESENT.**
                 - **If multiple metadata sources contribute to an answer, list all their respective index positions from the metadata array.**
                 - **DO NOT include metadata IDs—only their index positions.**
-                - **If no relevant metadata is found for a question, return "No relevant information available." followed by `&&metadataRef = []`.**
-                - **DO NOT OMIT `&&metadataRef =` UNDER ANY CIRCUMSTANCES. IT MUST ALWAYS BE PRESENT.**
-                - **Each answer must follow this format:**
+                - **If no relevant metadata is found for a question, return `"No relevant information available."` followed by `&&metadataRef = []`.**
+                - **Format must strictly follow:**
                   ```
                   <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-
+                  
                   <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
                   ```
 
@@ -383,20 +381,23 @@ def get_answer_from_AI(response):
                 ### **Final Output Format (Must Follow Exactly):**
                 ```
                 <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-
+                
                 <Extracted Answer for Question 2> &&metadataRef = [A, B, C]
                 ```
-                - **Example of Correct Output:**  
+                - **Example of Correct Output for Single Question:**
                   ```
-                  Dr. Mark Strassberg, a neurologist, was deposed regarding his expert testimony in the case involving plaintiff Brenna Duggan against the City of Walnut Creek. He was retained by the defense and testified about his forensic and clinical practice, emphasizing that a significant portion of his forensic work is for defendants. &&metadataRef = [5, 12, 20]
-
-                  The City of Walnut Creek denied liability, arguing that there was insufficient evidence to support the plaintiff's claims. &&metadataRef = [7, 15, 22]
+                  Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
+                  ```
+                - **Example of Correct Output for Multiple Questions:**
+                  ```
+                  Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
+                  
+                  The plaintiff is represented by the Alexander Law Group, with Richard Alexander, Esq., and Kelley Uustal, with Todd Falzone, Esq. &&metadataRef = [3, 5]
                   ```
                 - **If no relevant metadata is found for a specific question, return:**
                   ```
                   No relevant information available. &&metadataRef = []
                   ```
-
             """
 
         # Call GPT-3.5 API with parameters for consistency
