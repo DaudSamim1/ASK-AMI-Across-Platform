@@ -22,11 +22,11 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 GRAPHQL_URL = os.getenv("GRAPHQL_URL")
-DEPO_INDEX_NAME = os.getenv("DEPO_INDEX_NAME", "depo-index")
+DEPO_INDEX_NAME = os.getenv("DEPO_INDEX_NAME")
 
 # Ensure keys are loaded
-if not OPENAI_API_KEY or not PINECONE_API_KEY:
-    raise ValueError("Missing API Keys! Check your .env file.")
+if not OPENAI_API_KEY or not PINECONE_API_KEY or not DEPO_INDEX_NAME:
+    raise ValueError("Missing API Keys! or DEPO_INDEX_NAME Check your .env file.")
 
 
 app = Flask(__name__)
@@ -347,9 +347,12 @@ def get_answer_from_AI(response):
                 You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
 
                 ### **Task:**
-                - Analyze the provided `"metadata"` and generate direct, relevant answers for each question in `"user_query"`. 
-                - Use the `"text"` field in `"metadata"` to form the most accurate responses.
-                - Ensure the generated responses **directly answer** each question **without altering** the original `"text"` in `"metadata"`.
+                - Analyze the provided `"metadata"` and generate direct, relevant, and **fully explained answers** for each question in `"user_query"`. 
+                - **If `"user_query"` contains multiple questions, detect and SEPARATE each sub-question into its own distinct response.**
+                - **Each sub-question must be answered separately, clearly, and thoroughly.**
+                - Use the `"text"` field in `"metadata"` to form the most **detailed and informative** responses.
+                - Ensure the generated responses **fully explain** each answer instead of providing short, incomplete summaries.
+                - **Each answer must be at least 400 characters long but can exceed this if necessary.**
                 - Reference the source by indicating all `"metadata"` **INDEX POSITIONS (NOT IDs)** from which the answer was extracted.
 
                 ---
@@ -360,10 +363,12 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):**
-                - **If `"user_query"` contains a single question, return EXACTLY ONE answer—DO NOT generate multiple responses.**
+                - **FIRST: Identify if `"user_query"` contains multiple questions. If so, split them into individual questions.**
+                - **SECOND: Generate a separate, fully detailed answer for EACH question. DO NOT merge answers together.**
+                - **Each answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.**
                 - **DO NOT return `"No relevant information available."` if ANY metadata source contains relevant information.**
                 - **Only generate `"No relevant information available. &&metadataRef = []"` if ZERO metadata sources contain ANY relevant information.**
-                - **NEVER generate more than ONE response per question.**
+                - **STRICTLY structure responses so that each question gets its own distinct, fully explained answer.**
                 - **STRICTLY USE ONLY INDEX POSITIONS for `&&metadataRef = [X, Y, Z]`. DO NOT include metadata IDs, hashes, or other identifiers.**
                 - **INDEX POSITIONS must match the exact order in which the metadata appears in the provided `"metadata"` array.**
                 - **DO NOT OMIT `&&metadataRef =`. It MUST always be included at the end of the answer.**
@@ -373,29 +378,35 @@ def get_answer_from_AI(response):
                 - **DO NOT format the response as JSON, XML, or any structured format—return plain text only.**
                 - **DO NOT change sentence structure unless strictly necessary to form a complete, grammatically correct sentence.**
                 - **FORCE OUTPUT AS A CLEAN, SINGLE LINE WITH NO EXTRA WHITESPACES OR NEWLINES.**
+                - **ENSURE EACH ANSWER IS FULLY EXPLAINED, PROVIDING DETAILED CONTEXT SO THE USER GETS COMPLETE INFORMATION.**
+                - **ENSURE EVERY RESPONSE CONTAINS AT LEAST 400 CHARACTERS. IF NECESSARY, ADD ADDITIONAL CONTEXT TO REACH THIS MINIMUM LENGTH.**
+                - **DO NOT GROUP MULTIPLE QUESTIONS INTO A SINGLE ANSWER. EACH MUST BE SEPARATE.**
 
                 ---
 
                 ### **🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):**
                 
-                <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-                
-                - **Example of Correct Output for Single Question (FLAT TEXT, NO NEWLINES):**
+                <Detailed Answer for Question 1> &&metadataRef = [X, Y, Z]  
+                <Detailed Answer for Question 2> &&metadataRef = [A, B, C]  
+                <Detailed Answer for Question 3> &&metadataRef = [D, E, F]  
+                <Detailed Answer for Question 4> &&metadataRef = [G, H, I]  
+
+                - **Example of Correct Output for Multiple Questions (DETAILED RESPONSES, NO NEWLINES, MINIMUM 400 CHARACTERS PER ANSWER):**
                   
-                  Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
-                  
+                  The expert witness deposed in this case was Mark Strassberg, M.D. He has significant experience in forensic psychiatry and has been involved in multiple legal cases, providing expert testimony. &&metadataRef = [0, 1]  
+
+                  Dr. Strassberg specializes in forensic and clinical practice. His expertise includes forensic psychiatry, medical evaluations, and expert testimony, with 85% of his forensic practice being for defendants. &&metadataRef = [2]  
+
+                  Dr. Strassberg was retained by Mr. Wilson for this case. Mr. Wilson has worked with Dr. Strassberg on multiple cases due to his specialization in forensic evaluations. &&metadataRef = [3]  
+
+                  Dr. Strassberg has worked with Mr. Wilson approximately 5 or 6 times before this case. However, he did not keep records of previous engagements and could not recall specific details of past collaborations. &&metadataRef = [4]  
+
                 - **If no relevant metadata is found for a specific question, return EXACTLY this (NO MODIFICATIONS, NO EXTRA SPACES OR NEWLINES):**
                   
                   No relevant information available. &&metadataRef = []
-                  
 
                 ### **🚨 ENFORCEMENT RULES (MUST BE FOLLOWED 100% EXACTLY):**
-                - **NO NEWLINES (`\n`) BEFORE OR AFTER THE RESPONSE. Response must be a CLEAN, SINGLE LINE.**
-                - **Responses must be in plain text format, with NO additional formatting, NO code blocks, and NO markdown.**
-                - **STRICTLY reference metadata using INDEX POSITIONS ONLY—DO NOT use metadata IDs.**
-                - **STRICTLY follow the required format—DO NOT add extra labels, explanations, or unnecessary text.**
-                - **Metadata references MUST be 100% accurate—DO NOT include irrelevant metadata.**
-                - **DO NOT GUESS metadata references—only use exact index positions from the `"metadata"` array.**
+                - **FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE.**
             """
 
         # Call GPT-3.5 API with parameters for consistency
@@ -426,11 +437,11 @@ def get_answer_from_AI(response):
 
 
 # Function to get Depo from DepoIQ_ID
-def getDepo(depoIQ_ID, isSummary=True, isTranscript=True):
+def getDepo(depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True):
     try:
         # GraphQL query with conditional @include directives
         query = """
-        query GetDepoSummary($depoId: ID!, $includeSummary: Boolean!, $includeTranscript: Boolean!) {
+        query GetDepoSummary($depoId: ID!, $includeSummary: Boolean!, $includeTranscript: Boolean!, $includeContradictions: Boolean!) {
             getDepo(depoId: $depoId) {
                 transcript @include(if: $includeTranscript) {
                     pageNumber
@@ -468,6 +479,23 @@ def getDepo(depoIQ_ID, isSummary=True, isTranscript=True):
                         text
                     }
                 }
+                contradictions @include(if: $includeContradictions) {
+                    reason
+                    initial_response_starting_page
+                    initial_response_starting_line
+                    initial_response_ending_page
+                    initial_response_ending_line
+                    initial_question
+                    initial_answer
+                    contradictory_responses {
+                        contradictory_response_starting_page
+                        contradictory_response_starting_line
+                        contradictory_response_ending_page
+                        contradictory_response_ending_line
+                        contradictory_question
+                        contradictory_answer
+                    }
+                }
             }
         }
         """
@@ -478,6 +506,7 @@ def getDepo(depoIQ_ID, isSummary=True, isTranscript=True):
                 "depoId": depoIQ_ID,
                 "includeSummary": isSummary,
                 "includeTranscript": isTranscript,
+                "includeContradictions": isContradictions,
             },
         }
 
@@ -505,7 +534,9 @@ def getDepo(depoIQ_ID, isSummary=True, isTranscript=True):
 def getDepoSummary(depoIQ_ID):
     """Get Depo Summary from DepoIQ_ID"""
     try:
-        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=False)
+        depo = getDepo(
+            depoIQ_ID, isSummary=True, isTranscript=False, isContradictions=False
+        )
         return depo["summary"]
     except Exception as e:
         print(f"Error fetching depo summary: {e}")
@@ -516,10 +547,25 @@ def getDepoSummary(depoIQ_ID):
 def getDepoTranscript(depoIQ_ID):
     """Get Depo Transcript from DepoIQ_ID"""
     try:
-        depo = getDepo(depoIQ_ID, isSummary=False, isTranscript=True)
+        depo = getDepo(
+            depoIQ_ID, isSummary=False, isTranscript=True, isContradictions=False
+        )
         return depo["transcript"]
     except Exception as e:
         print(f"Error fetching depo transcript: {e}")
+        return {}
+
+
+# Function to genrate Get Contradictions from Depo
+def getDepoContradictions(depoIQ_ID):
+    """Get Depo Contradictions from DepoIQ_ID"""
+    try:
+        depo = getDepo(
+            depoIQ_ID, isSummary=False, isTranscript=False, isContradictions=True
+        )
+        return depo["contradictions"]
+    except Exception as e:
+        print(f"Error fetching depo contradictions: {e}")
         return {}
 
 
@@ -723,12 +769,89 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
     return len(vectors_to_upsert), skipped_chunks
 
 
+def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
+    vectors_to_upsert = []
+    skipped_chunks = []
+
+    try:
+        print(
+            f"🔹 Storing contradictions for depoIQ_ID: {depoIQ_ID} {len(contradictions_data)}"
+        )
+
+        for chunk_index in range(0, len(contradictions_data)):
+            contradiction = contradictions_data[chunk_index]
+
+            print(f"\n\n 🔹 Storing contradiction: {chunk_index} \n\n\n\n")
+
+            # check if already exists in pinecone
+            if check_existing_entry(
+                depoIQ_ID,
+                category,
+                chunk_index,
+            ):
+                skipped_chunks.append(chunk_index)
+                print(
+                    f"⚠️ Contradiction already exists for pages {chunk_index}, skipping..."
+                )
+                continue
+
+            # Extract contradiction text, ensuring each line is properly formatted
+            reason = contradiction.get("reason")
+            contradictory_responses = contradiction.get("contradictory_responses")
+            initial_question = contradiction.get("initial_question")
+            initial_answer = contradiction.get("initial_answer")
+            contradictory_responses_string = ""
+            for contradictory_response in contradictory_responses:
+                contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
+
+            contradiction_text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
+
+            # Generate embedding
+            embedding = generate_embedding(contradiction_text)
+
+            if not any(embedding):
+                print(
+                    f"⚠️ Skipping empty embedding for contradiction: {contradiction_text}"
+                )
+                continue
+
+            # Add the actual transcript text in metadata for retrieval
+            metadata = {
+                "depoIQ_ID": depoIQ_ID,
+                "category": category,
+                "chunk_index": chunk_index,
+            }
+
+            # Add to batch
+            vectors_to_upsert.append(
+                {
+                    "id": str(uuid.uuid4()),  # Unique ID
+                    "values": embedding,  # Embedding vector
+                    "metadata": metadata,  # Metadata including the text
+                }
+            )
+
+        if vectors_to_upsert:
+            depoIndex.upsert(vectors=vectors_to_upsert)
+            print(
+                f"✅ Successfully inserted {len(vectors_to_upsert)} contradictions in Pinecone."
+            )
+
+        return len(vectors_to_upsert), skipped_chunks
+
+    except Exception as e:
+        print(f"🔹 Error in store_contradictions_in_pinecone: {e}")
+        return 0, []
+
+
 # Function to generate add depo summaries to pinecone
 def add_depo_summaries(depo_summary, depoIQ_ID):
     try:
         excluded_keys = ["visualization"]
         total_inserted = 0
         skipped_sub_categories = {}
+
+        print(f"🔹 Adding summaries for depoIQ_ID: {depoIQ_ID}")
 
         for key, value in depo_summary.items():
             if key in excluded_keys:
@@ -766,11 +889,16 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
         return response
 
     except Exception as e:
-        return {"status": "error", "message": "Something went wrong", "details": str(e)}
+        return {
+            "status": "error",
+            "message": "Something went wrong in add_depo_summaries",
+            "details": str(e),
+        }
 
 
 def add_depo_transcript(transcript_data, depoIQ_ID):
     try:
+        print(f"🔹 Adding transcripts for depoIQ_ID: {depoIQ_ID}")
         if not transcript_data:
             return {
                 "status": "warning",
@@ -811,7 +939,63 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
         return response
 
     except Exception as e:
-        return {"status": "error", "message": "Something went wrong", "details": str(e)}
+        return {
+            "status": "error",
+            "message": "Something went wrong in add_depo_transcript",
+            "details": str(e),
+        }
+
+
+def add_depo_contradictions(contradictions_data, depoIQ_ID):
+    try:
+        print(f"🔹 Adding contradictions for depoIQ_ID: {depoIQ_ID}")
+        if not contradictions_data:
+            return {
+                "status": "warning",
+                "message": "No contradictions data found.",
+                "data": {
+                    "depoIQ_ID": depoIQ_ID,
+                    "total_inserted": 0,
+                    "skipped_details": [],
+                    "skipped_count": 0,
+                },
+            }
+
+        category = "contradiction"
+
+        # Store contradictions data
+        inserted_contradictions, skipped_contradictions = (
+            store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data)
+        )
+
+        print()
+
+        if inserted_contradictions > 0:
+            status = "success"
+        elif skipped_contradictions:
+            status = "warning"
+        else:
+            status = "error"
+
+        response = {
+            "status": status,
+            "message": "Contradictions processed.",
+            "data": {
+                "depoIQ_ID": depoIQ_ID,
+                "total_inserted": inserted_contradictions,
+                "skipped_details": skipped_contradictions,
+                "skipped_count": len(skipped_contradictions),
+            },
+        }
+
+        return response
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "Something went wrong in add_depo_contradictions",
+            "details": str(e),
+        }
 
 
 # 🏠 Home Endpoint for testing
@@ -840,17 +1024,24 @@ def get_depo_by_Id(depoIQ_ID):
         description: Internal server error
     """
     try:
-        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
+        depo = getDepo(
+            depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True
+        )
         return jsonify(depo), 200
 
     except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
+        return (
+            jsonify(
+                {"error": "Something went wrong in get_depo_by_Id", "details": str(e)}
+            ),
+            500,
+        )
 
 
 @app.route("/depo/add/<string:depoIQ_ID>", methods=["GET"])
 def add_depo(depoIQ_ID):
     """
-    Get Summaries & Transcript from Depo and store into Pinecone
+    Get Summaries & Transcript & Contradictions from Depo and store into Pinecone
     ---
     tags:
       - Depo
@@ -868,11 +1059,14 @@ def add_depo(depoIQ_ID):
     """
     try:
         # Get depo data
-        depo = getDepo(depoIQ_ID, isSummary=True, isTranscript=True)
+        depo = getDepo(
+            depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True
+        )
 
         # Extract summary & transcript data
         summary_data = depo.get("summary", {})
-        transcript_data = depo.get("transcript", {})
+        transcript_data = depo.get("transcript", [])
+        contradictions_data = depo.get("contradictions", [])
 
         # Process & store summaries
         depo_response = add_depo_summaries(summary_data, depoIQ_ID)
@@ -880,15 +1074,22 @@ def add_depo(depoIQ_ID):
         # Process & store transcript
         transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
 
+        # Process & store contradictions
+        contradictions_response = add_depo_contradictions(
+            contradictions_data, depoIQ_ID
+        )
+
         # Determine status
         if (
             depo_response["status"] == "success"
             and transcript_response["status"] == "success"
+            and contradictions_response["status"] == "success"
         ):
             status = "success"
         elif (
             depo_response["status"] == "warning"
             or transcript_response["status"] == "warning"
+            or contradictions_response["status"] == "warning"
         ):
             status = "warning"
         else:
@@ -898,19 +1099,21 @@ def add_depo(depoIQ_ID):
         merged_response = {
             "status": status,
             "depoIQ_ID": depoIQ_ID,
-            "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions in Pinecone for depoIQ_ID {depoIQ_ID}.",
             "summary": depo_response["data"],
             "transcript": transcript_response["data"],
+            "contradictions": contradictions_response["data"],
         }
 
         return jsonify(merged_response), 200
 
     except Exception as e:
+        print(f"🔹 Error in add_depo: {e}")
         return (
             jsonify(
                 {
                     "status": "error",
-                    "message": "Something went wrong",
+                    "message": "Something went wrong in add_depo",
                     "details": str(e),
                 }
             ),
@@ -1005,7 +1208,12 @@ def talk_summary():
         return jsonify(query_pinecone_response), 200
 
     except Exception as e:
-        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
+        return (
+            jsonify(
+                {"error": "Something went wrong in talk_summary", "details": str(e)}
+            ),
+            500,
+        )
 
 
 if __name__ == "__main__":
