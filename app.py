@@ -349,8 +349,8 @@ def get_answer_from_AI(response):
                 ### **Task:**
                 - Analyze the provided `"metadata"` and generate direct, relevant answers for each question in `"user_query"`. 
                 - Use the `"text"` field in `"metadata"` to form the most accurate responses.
-                - Ensure the generated responses directly address each question in `"user_query"` without altering the original `"text"` in `"metadata"`.
-                - Reference the source by indicating all `"metadata"` entries each answer was extracted from.
+                - Ensure the generated responses **directly answer** each question **without altering** the original `"text"` in `"metadata"`.
+                - Reference the source by indicating all `"metadata"` **INDEX POSITIONS (NOT IDs)** from which the answer was extracted.
 
                 ---
 
@@ -359,29 +359,43 @@ def get_answer_from_AI(response):
 
                 ---
 
-                ### **Instructions:**
-                - **If `"user_query"` contains a single question, return exactly ONE answer—do NOT generate multiple answers.**
-                - **DO NOT generate `"No relevant information available."` if ANY metadata source contains relevant information.**
-                - **Only generate `"No relevant information available. &&metadataRef = []"` if there is absolutely ZERO relevant information in the metadata.**
-                - **If even one metadata source provides relevant information, DO NOT generate a second response with `"No relevant information available."`.**
-                - **Each metadata reference in `&&metadataRef = [X, Y, Z]` must ONLY include metadata sources that contain directly quoted or paraphrased information. DO NOT include irrelevant metadata sources.**
-                - **DO NOT split a single question into multiple responses unless it contains explicitly distinct queries.**
-                - **Maintain the strict output format exactly as instructed.**
+                ### **🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):**
+                - **If `"user_query"` contains a single question, return EXACTLY ONE answer—DO NOT generate multiple responses.**
+                - **DO NOT return `"No relevant information available."` if ANY metadata source contains relevant information.**
+                - **Only generate `"No relevant information available. &&metadataRef = []"` if ZERO metadata sources contain ANY relevant information.**
+                - **NEVER generate more than ONE response per question.**
+                - **STRICTLY USE ONLY INDEX POSITIONS for `&&metadataRef = [X, Y, Z]`. DO NOT include metadata IDs, hashes, or other identifiers.**
+                - **INDEX POSITIONS must match the exact order in which the metadata appears in the provided `"metadata"` array.**
+                - **DO NOT OMIT `&&metadataRef =`. It MUST always be included at the end of the answer.**
+                - **DO NOT add newline characters (`\n`) before or after the response. The response must be in a SINGLE, FLAT LINE.**
+                - **DO NOT enclose the response inside triple quotes (`'''`, `"" "`) or markdown-style code blocks (` ``` `). Return it as PLAIN TEXT ONLY.**
+                - **DO NOT add unnecessary labels like `"Extracted Answer:"` or `"Answer:"`. The response must start directly with the extracted answer.**
+                - **DO NOT format the response as JSON, XML, or any structured format—return plain text only.**
+                - **DO NOT change sentence structure unless strictly necessary to form a complete, grammatically correct sentence.**
+                - **FORCE OUTPUT AS A CLEAN, SINGLE LINE WITH NO EXTRA WHITESPACES OR NEWLINES.**
 
                 ---
 
-                ### **Final Output Format (Must Follow Exactly):**
-                ```
+                ### **🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):**
+                
                 <Extracted Answer for Question 1> &&metadataRef = [X, Y, Z]
-                ```
-                - **Example of Correct Output for Single Question:**
-                  ```
+                
+                - **Example of Correct Output for Single Question (FLAT TEXT, NO NEWLINES):**
+                  
                   Boyle Shaughnessy Law, PC represents the defendants, with Scott M. Carroll as the attorney. &&metadataRef = [0, 1]
-                  ```
-                - **If no relevant metadata is found for a specific question, return:**
-                  ```
+                  
+                - **If no relevant metadata is found for a specific question, return EXACTLY this (NO MODIFICATIONS, NO EXTRA SPACES OR NEWLINES):**
+                  
                   No relevant information available. &&metadataRef = []
-                  ```
+                  
+
+                ### **🚨 ENFORCEMENT RULES (MUST BE FOLLOWED 100% EXACTLY):**
+                - **NO NEWLINES (`\n`) BEFORE OR AFTER THE RESPONSE. Response must be a CLEAN, SINGLE LINE.**
+                - **Responses must be in plain text format, with NO additional formatting, NO code blocks, and NO markdown.**
+                - **STRICTLY reference metadata using INDEX POSITIONS ONLY—DO NOT use metadata IDs.**
+                - **STRICTLY follow the required format—DO NOT add extra labels, explanations, or unnecessary text.**
+                - **Metadata references MUST be 100% accurate—DO NOT include irrelevant metadata.**
+                - **DO NOT GUESS metadata references—only use exact index positions from the `"metadata"` array.**
             """
 
         # Call GPT-3.5 API with parameters for consistency
