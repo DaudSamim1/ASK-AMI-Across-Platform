@@ -132,7 +132,9 @@ def snake_to_camel(name, isSummary=True):
 
 
 # Function to group by depoIQ_ID for Pinecone results
-def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
+def group_by_depoIQ_ID(
+    data, isSummary=False, isTranscript=False, isContradictions=False, isAdmission=False
+):
     grouped_data = {}
     for entry in data:
         depoIQ_ID = entry["depoIQ_ID"]
@@ -147,8 +149,25 @@ def group_by_depoIQ_ID(data, isSummary=False, isTranscript=False):
                 grouped_data[depoIQ_ID] = getDepoSummary(depoIQ_ID)
                 return grouped_data
 
+            if isContradictions and not isSummary and not isTranscript:
+                grouped_data[depoIQ_ID] = getDepoContradictions(depoIQ_ID)
+                return grouped_data
+
+            if (
+                isAdmission
+                and not isSummary
+                and not isTranscript
+                and not isContradictions
+            ):
+                grouped_data[depoIQ_ID] = getDepoAdmissions(depoIQ_ID)
+                return grouped_data
+
             grouped_data[depoIQ_ID] = getDepo(
-                depoIQ_ID, isSummary=True, isTranscript=True
+                depoIQ_ID,
+                isSummary=True,
+                isTranscript=True,
+                isContradictions=True,
+                isAdmission=True,
             )
     print("Grouped Data fetched from DB \n\n")
     return grouped_data
@@ -171,10 +190,13 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
         # Define filter criteria (search within `depo_id`)
         transcript_category = "transcript"
+        contradiction_category = "contradiction"
+        admission_category = "admission"
         filter_criteria = {}
         if depo_ids and len(depo_ids) > 0:
             # Add depo_id filter
             filter_criteria["depoIQ_ID"] = {"$in": depo_ids}
+            filter_criteria["category"] = {"$ne": contradiction_category}
 
         # Search in Pinecone
         results = depoIndex.query(
@@ -203,7 +225,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
         # Group results by depoIQ_ID
         grouped_result = group_by_depoIQ_ID(
-            matched_results, isSummary=True, isTranscript=True
+            matched_results, isSummary=True, isTranscript=True, isContradictions=True
         )
 
         # print(f"Grouped Results: {grouped_result} \n\n\n")
@@ -213,8 +235,15 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         for match in matched_results:
             depoIQ_ID = match["depoIQ_ID"]
             category = match["category"]
-            isSummary = category != transcript_category
+            isSummary = (
+                category != transcript_category
+                and category != contradiction_category
+                and category != admission_category
+            )
             isTranscript = category == transcript_category
+            isContradictions = category == contradiction_category
+            isAdmission = category == admission_category
+
             depo_data = grouped_result.get(depoIQ_ID, {})
 
             if isSummary:
@@ -264,6 +293,51 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                                 if line["lineText"].strip()
                             ]
                         ),
+                    }
+                )
+
+            # if isContradictions:
+            #     chunk_index = match["chunk_index"]
+            #     contradictions = depo_data.get("contradictions", {})
+            #     contradiction = contradictions[int(chunk_index)]
+            #     reason = contradiction.get("reason")
+            #     initial_question = contradiction.get("initial_question")
+            #     initial_answer = contradiction.get("initial_answer")
+            #     contradictory_responses = contradiction.get("contradictory_responses")
+            #     contradictory_responses_string = ""
+            #     for contradictory_response in contradictory_responses:
+            #         contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
+
+            #     text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
+            #     custom_response.append(
+            #         {
+            #             "depoIQ_ID": depoIQ_ID,
+            #             "category": category,
+            #             "chunk_index": chunk_index,
+            #             "text": text,
+            #         }
+            #     )
+
+            if isAdmission:
+                chunk_index = match["chunk_index"]
+                admissions = depo_data.get("admissions", {})
+
+                [admission] = [
+                    admission
+                    for admission in admissions["text"]
+                    if admission["admission_id"] == chunk_index
+                ]
+                reason = admission.get("reason")
+                question = admission.get("question")
+                answer = admission.get("answer")
+                text = f"Question: {question} Answer: {answer} Reason:  {reason}"
+
+                custom_response.append(
+                    {
+                        "depoIQ_ID": depoIQ_ID,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "text": text,
                     }
                 )
 
@@ -347,13 +421,13 @@ def get_answer_from_AI(response):
                 You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
 
                 ### **Task:**
-                - Analyze the provided `"metadata"` and generate direct, relevant, and **fully explained answers** for each question in `"user_query"`. 
-                - **If `"user_query"` contains multiple questions, detect and SEPARATE each sub-question into its own distinct response.**
+                - Analyze the provided "metadata" and generate direct, relevant, and **fully explained answers** for each question in "user_query".
+                - **If "user_query" contains multiple questions, detect and SEPARATE each sub-question into its own distinct response.**
                 - **Each sub-question must be answered separately, clearly, and thoroughly.**
-                - Use the `"text"` field in `"metadata"` to form the most **detailed and informative** responses.
+                - Use the "text" field in "metadata" to form the most **detailed and informative** responses.
                 - Ensure the generated responses **fully explain** each answer instead of providing short, incomplete summaries.
                 - **Each answer must be at least 400 characters long but can exceed this if necessary.**
-                - Reference the source by indicating all `"metadata"` **INDEX POSITIONS (NOT IDs)** from which the answer was extracted.
+                - Reference the source by indicating all "metadata" **OBJECT POSITIONS IN THE ARRAY (NOT chunk_index, IDs, or any other identifiers).**
 
                 ---
 
@@ -363,18 +437,20 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):**
-                - **FIRST: Identify if `"user_query"` contains multiple questions. If so, split them into individual questions.**
+                - **FIRST: Identify if "user_query" contains multiple questions. If so, split them into individual questions.**
                 - **SECOND: Generate a separate, fully detailed answer for EACH question. DO NOT merge answers together.**
                 - **Each answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.**
-                - **DO NOT return `"No relevant information available."` if ANY metadata source contains relevant information.**
-                - **Only generate `"No relevant information available. &&metadataRef = []"` if ZERO metadata sources contain ANY relevant information.**
+                - **DO NOT return "No relevant information available." if ANY metadata source contains relevant information.**
+                - **Only generate "No relevant information available. &&metadataRef = []" if ZERO metadata sources contain ANY relevant information.**
                 - **STRICTLY structure responses so that each question gets its own distinct, fully explained answer.**
-                - **STRICTLY USE ONLY INDEX POSITIONS for `&&metadataRef = [X, Y, Z]`. DO NOT include metadata IDs, hashes, or other identifiers.**
-                - **INDEX POSITIONS must match the exact order in which the metadata appears in the provided `"metadata"` array.**
-                - **DO NOT OMIT `&&metadataRef =`. It MUST always be included at the end of the answer.**
-                - **DO NOT add newline characters (`\n`) before or after the response. The response must be in a SINGLE, FLAT LINE.**
-                - **DO NOT enclose the response inside triple quotes (`'''`, `"" "`) or markdown-style code blocks (` ``` `). Return it as PLAIN TEXT ONLY.**
-                - **DO NOT add unnecessary labels like `"Extracted Answer:"` or `"Answer:"`. The response must start directly with the extracted answer.**
+                - **REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array.**
+                - **DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object’s array position in the metadata list.**
+                - **DO NOT use index ranges such as [4-6]. ALWAYS list individual indices explicitly, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
+                - **INDEX POSITIONS must correspond exactly to each metadata item’s position in the "metadata" array as provided.**
+                - **DO NOT OMIT &&metadataRef =. It MUST always be included at the end of the answer.**
+                - **DO NOT add newline characters (\\n) before or after the response. The response must be in a SINGLE, FLAT LINE.**
+                - **DO NOT enclose the response inside triple quotes (''', "" ") or markdown-style code blocks (``` ). Return it as PLAIN TEXT ONLY.**
+                - **DO NOT add unnecessary labels like "Extracted Answer:" or "Answer:". The response must start directly with the extracted answer.**
                 - **DO NOT format the response as JSON, XML, or any structured format—return plain text only.**
                 - **DO NOT change sentence structure unless strictly necessary to form a complete, grammatically correct sentence.**
                 - **FORCE OUTPUT AS A CLEAN, SINGLE LINE WITH NO EXTRA WHITESPACES OR NEWLINES.**
@@ -385,29 +461,32 @@ def get_answer_from_AI(response):
                 ---
 
                 ### **🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):**
-                
+
                 <Detailed Answer for Question 1> &&metadataRef = [X, Y, Z]  
                 <Detailed Answer for Question 2> &&metadataRef = [A, B, C]  
                 <Detailed Answer for Question 3> &&metadataRef = [D, E, F]  
                 <Detailed Answer for Question 4> &&metadataRef = [G, H, I]  
 
                 - **Example of Correct Output for Multiple Questions (DETAILED RESPONSES, NO NEWLINES, MINIMUM 400 CHARACTERS PER ANSWER):**
-                  
-                  The expert witness deposed in this case was Mark Strassberg, M.D. He has significant experience in forensic psychiatry and has been involved in multiple legal cases, providing expert testimony. &&metadataRef = [0, 1]  
 
-                  Dr. Strassberg specializes in forensic and clinical practice. His expertise includes forensic psychiatry, medical evaluations, and expert testimony, with 85% of his forensic practice being for defendants. &&metadataRef = [2]  
+                The expert witness deposed in this case was Mark Strassberg, M.D. He has significant experience in forensic psychiatry and has been involved in multiple legal cases, providing expert testimony. &&metadataRef = [0, 1]  
 
-                  Dr. Strassberg was retained by Mr. Wilson for this case. Mr. Wilson has worked with Dr. Strassberg on multiple cases due to his specialization in forensic evaluations. &&metadataRef = [3]  
+                Dr. Strassberg specializes in forensic and clinical practice. His expertise includes forensic psychiatry, medical evaluations, and expert testimony, with 85% of his forensic practice being for defendants. &&metadataRef = [2]  
 
-                  Dr. Strassberg has worked with Mr. Wilson approximately 5 or 6 times before this case. However, he did not keep records of previous engagements and could not recall specific details of past collaborations. &&metadataRef = [4]  
+                Dr. Strassberg was retained by Mr. Wilson for this case. Mr. Wilson has worked with Dr. Strassberg on multiple cases due to his specialization in forensic evaluations. &&metadataRef = [3]  
+
+                Dr. Strassberg has worked with Mr. Wilson approximately 5 or 6 times before this case. However, he did not keep records of previous engagements and could not recall specific details of past collaborations. &&metadataRef = [4]  
+
+                - **DO NOT use index ranges such as [4-6]. ALWAYS list each metadata index individually, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
 
                 - **If no relevant metadata is found for a specific question, return EXACTLY this (NO MODIFICATIONS, NO EXTRA SPACES OR NEWLINES):**
-                  
-                  No relevant information available. &&metadataRef = []
+
+                No relevant information available. &&metadataRef = []
 
                 ### **🚨 ENFORCEMENT RULES (MUST BE FOLLOWED 100% EXACTLY):**
                 - **FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE.**
-            """
+                """
+
 
         # Call GPT-3.5 API with parameters for consistency
         ai_response = openai_client.chat.completions.create(
@@ -437,11 +516,17 @@ def get_answer_from_AI(response):
 
 
 # Function to get Depo from DepoIQ_ID
-def getDepo(depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True):
+def getDepo(
+    depoIQ_ID,
+    isSummary=True,
+    isTranscript=True,
+    isContradictions=True,
+    isAdmission=True,
+):
     try:
         # GraphQL query with conditional @include directives
         query = """
-        query GetDepoSummary($depoId: ID!, $includeSummary: Boolean!, $includeTranscript: Boolean!, $includeContradictions: Boolean!) {
+        query GetDepoSummary($depoId: ID!, $includeSummary: Boolean!, $includeTranscript: Boolean!, $includeContradictions: Boolean!, $includeAdmission: Boolean!) {
             getDepo(depoId: $depoId) {
                 transcript @include(if: $includeTranscript) {
                     pageNumber
@@ -496,6 +581,24 @@ def getDepo(depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True)
                         contradictory_answer
                     }
                 }
+                admissions @include(if: $includeAdmission) {
+                    text {
+                        reference {
+                        start {
+                            line
+                            page
+                        }
+                        end {
+                            page
+                            line
+                        }
+                        }
+                        admission_id
+                        answer
+                        question
+                        reason
+                    }
+                    }
             }
         }
         """
@@ -507,6 +610,7 @@ def getDepo(depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True)
                 "includeSummary": isSummary,
                 "includeTranscript": isTranscript,
                 "includeContradictions": isContradictions,
+                "includeAdmission": isAdmission,
             },
         }
 
@@ -535,7 +639,11 @@ def getDepoSummary(depoIQ_ID):
     """Get Depo Summary from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID, isSummary=True, isTranscript=False, isContradictions=False
+            depoIQ_ID,
+            isSummary=True,
+            isTranscript=False,
+            isContradictions=False,
+            isAdmission=False,
         )
         return depo["summary"]
     except Exception as e:
@@ -548,7 +656,11 @@ def getDepoTranscript(depoIQ_ID):
     """Get Depo Transcript from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID, isSummary=False, isTranscript=True, isContradictions=False
+            depoIQ_ID,
+            isSummary=False,
+            isTranscript=True,
+            isContradictions=False,
+            isAdmission=False,
         )
         return depo["transcript"]
     except Exception as e:
@@ -561,11 +673,32 @@ def getDepoContradictions(depoIQ_ID):
     """Get Depo Contradictions from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID, isSummary=False, isTranscript=False, isContradictions=True
+            depoIQ_ID,
+            isSummary=False,
+            isTranscript=False,
+            isContradictions=True,
+            isAdmission=False,
         )
         return depo["contradictions"]
     except Exception as e:
         print(f"Error fetching depo contradictions: {e}")
+        return {}
+
+
+# Function to genrate Get Admissions from Depo
+def getDepoAdmissions(depoIQ_ID):
+    """Get Depo Admissions from DepoIQ_ID"""
+    try:
+        depo = getDepo(
+            depoIQ_ID,
+            isSummary=False,
+            isTranscript=False,
+            isContradictions=False,
+            isAdmission=True,
+        )
+        return depo["admissions"]
+    except Exception as e:
+        print(f"Error fetching depo admissions: {e}")
         return {}
 
 
@@ -645,23 +778,23 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
 
     for chunk_index, chunk_value in enumerate(text_chunks):
 
-        print(f"🔹 Processing chunk {chunk_index + 1} of {category}")
+        print(f"\n\n\n\n🔹 Processing chunk {chunk_index + 1} of {category}\n\n\n\n")
 
         if not chunk_value or not isinstance(chunk_value, str):
-            print(f"⚠️ Skipping invalid text chunk: {chunk_index}")
+            print(f"⚠️ Skipping invalid text chunk: {chunk_index}\n\n\n\n")
             continue
 
         # Check if summary already exists
         if check_existing_entry(depoIQ_ID, category, chunk_index):
             skipped_chunks.append(chunk_index)
-            print(f"⚠️ Summary already exists: {chunk_index}, skipping...")
+            print(f"⚠️ Summary already exists: {chunk_index}, skipping...\n\n\n\n")
             continue
 
         # Generate embedding
         embedding = generate_embedding(chunk_value)
 
         if not any(embedding):  # Check for all zero vectors
-            print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}")
+            print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}\n\n\n\n")
             continue
 
         # Metadata
@@ -669,7 +802,6 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
             "depoIQ_ID": depoIQ_ID,
             "category": category,
             "chunk_index": chunk_index,
-            # "text": chunk_value,
         }
 
         # Add to batch
@@ -696,6 +828,7 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
     vectors_to_upsert = []
     skipped_chunks = []
     chunk_page_range = 3
+    max_chunk_upsert = 20
 
     for i in range(0, len(transcript_data), chunk_page_range):
         grouped_pages = transcript_data[i : i + chunk_page_range]
@@ -760,6 +893,13 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
             }
         )
 
+        if len(vectors_to_upsert) >= max_chunk_upsert:
+            depoIndex.upsert(vectors=vectors_to_upsert)
+            print(
+                f"✅ Successfully inserted {len(vectors_to_upsert)} transcript chunks in Pinecone.\n\n"
+            )
+            vectors_to_upsert = []
+
     if vectors_to_upsert:
         depoIndex.upsert(vectors=vectors_to_upsert)
         print(
@@ -772,6 +912,7 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
 def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
     vectors_to_upsert = []
     skipped_chunks = []
+    max_chunk_upsert = 30
 
     try:
         print(
@@ -831,6 +972,13 @@ def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
                 }
             )
 
+            if len(vectors_to_upsert) >= max_chunk_upsert:
+                depoIndex.upsert(vectors=vectors_to_upsert)
+                print(
+                    f"✅ Successfully inserted {len(vectors_to_upsert)} contradictions in Pinecone.\n\n"
+                )
+                vectors_to_upsert = []
+
         if vectors_to_upsert:
             depoIndex.upsert(vectors=vectors_to_upsert)
             print(
@@ -841,6 +989,91 @@ def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
 
     except Exception as e:
         print(f"🔹 Error in store_contradictions_in_pinecone: {e}")
+        return 0, []
+
+
+def store_admissions_in_pinecone(depoIQ_ID, category, admissions_data):
+    vectors_to_upsert = []
+    skipped_chunks = []
+    max_chunk_upsert = 30
+
+    try:
+        print(
+            f"🔹 Storing admissions for depoIQ_ID: {depoIQ_ID} {len(admissions_data)}"
+        )
+
+        for index in range(0, len(admissions_data)):
+            admission = admissions_data[index]
+            chunk_index = admission.get("admission_id")
+
+            if chunk_index == None:
+                print(
+                    f"⚠️ Skipping admission: {admission} because chunk_index is None \n\n\n\n"
+                )
+                continue
+
+            print(f"\n\n 🔹 Storing admission: {chunk_index} \n\n\n\n")
+
+            # check if already exists in pinecone
+            if check_existing_entry(
+                depoIQ_ID,
+                category,
+                chunk_index,
+            ):
+                skipped_chunks.append(chunk_index)
+                print(
+                    f"⚠️ Admission already exists for pages {chunk_index}, skipping..."
+                )
+                continue
+
+            # Extract admission text, ensuring each line is properly formatted
+            reason = admission.get("reason")
+            question = admission.get("question")
+            answer = admission.get("answer")
+            admission_text = f"{question} {answer} {reason}"
+
+            print(f"\n\n\n\n🔹 Admission text: {admission_text}\n\n\n\n\n")
+
+            # Generate embedding
+            embedding = generate_embedding(admission_text)
+
+            if not any(embedding):
+                print(f"⚠️ Skipping empty embedding for admission: {admission_text}")
+                continue
+
+            # Add the actual transcript text in metadata for retrieval
+            metadata = {
+                "depoIQ_ID": depoIQ_ID,
+                "category": category,
+                "chunk_index": chunk_index,
+            }
+
+            # Add to batch
+            vectors_to_upsert.append(
+                {
+                    "id": str(uuid.uuid4()),  # Unique ID
+                    "values": embedding,  # Embedding vector
+                    "metadata": metadata,  # Metadata including the text
+                }
+            )
+
+            if len(vectors_to_upsert) >= max_chunk_upsert:
+                depoIndex.upsert(vectors=vectors_to_upsert)
+                print(
+                    f"✅ Successfully inserted {len(vectors_to_upsert)} admissions in Pinecone."
+                )
+                vectors_to_upsert = []
+
+        if vectors_to_upsert:
+            depoIndex.upsert(vectors=vectors_to_upsert)
+            print(
+                f"✅ Successfully inserted {len(vectors_to_upsert)} admissions in Pinecone.\n\n\n"
+            )
+
+        return len(vectors_to_upsert), skipped_chunks
+
+    except Exception as e:
+        print(f"🔹 Error in store_admissions_in_pinecone: {e}")
         return 0, []
 
 
@@ -998,6 +1231,57 @@ def add_depo_contradictions(contradictions_data, depoIQ_ID):
         }
 
 
+def add_depo_admissions(admissions_data, depoIQ_ID):
+    try:
+        print(f"🔹 Adding admissions for depoIQ_ID: {depoIQ_ID}\n\n")
+
+        if not admissions_data:
+            return {
+                "status": "warning",
+                "message": "No admissions data found.",
+                "data": {
+                    "depoIQ_ID": depoIQ_ID,
+                    "total_inserted": 0,
+                    "skipped_details": [],
+                    "skipped_count": 0,
+                },
+            }
+
+        category = "admission"
+
+        # Store admissions data
+        inserted_admissions, skipped_admissions = store_admissions_in_pinecone(
+            depoIQ_ID, category, admissions_data=admissions_data["text"]
+        )
+
+        if inserted_admissions > 0:
+            status = "success"
+        elif skipped_admissions:
+            status = "warning"
+        else:
+            status = "error"
+
+        response = {
+            "status": status,
+            "message": "Admissions processed.",
+            "data": {
+                "depoIQ_ID": depoIQ_ID,
+                "total_inserted": inserted_admissions,
+                "skipped_details": skipped_admissions,
+                "skipped_count": len(skipped_admissions),
+            },
+        }
+
+        return response
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "Something went wrong in add_depo_admissions",
+            "details": str(e),
+        }
+
+
 # 🏠 Home Endpoint for testing
 @app.route("/", methods=["GET"])
 def home():
@@ -1025,7 +1309,11 @@ def get_depo_by_Id(depoIQ_ID):
     """
     try:
         depo = getDepo(
-            depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True
+            depoIQ_ID,
+            isSummary=True,
+            isTranscript=True,
+            isContradictions=True,
+            isAdmission=True,
         )
         return jsonify(depo), 200
 
@@ -1041,7 +1329,7 @@ def get_depo_by_Id(depoIQ_ID):
 @app.route("/depo/add/<string:depoIQ_ID>", methods=["GET"])
 def add_depo(depoIQ_ID):
     """
-    Get Summaries & Transcript & Contradictions from Depo and store into Pinecone
+    Get Summaries & Transcript & Contradictions & Admissions from Depo and store into Pinecone
     ---
     tags:
       - Depo
@@ -1060,36 +1348,46 @@ def add_depo(depoIQ_ID):
     try:
         # Get depo data
         depo = getDepo(
-            depoIQ_ID, isSummary=True, isTranscript=True, isContradictions=True
+            depoIQ_ID,
+            isSummary=True,
+            isTranscript=True,
+            isContradictions=True,
+            isAdmission=True,
         )
 
         # Extract summary & transcript data
         summary_data = depo.get("summary", {})
         transcript_data = depo.get("transcript", [])
         contradictions_data = depo.get("contradictions", [])
+        admissions_data = depo.get("admissions", [])
 
         # Process & store summaries
-        depo_response = add_depo_summaries(summary_data, depoIQ_ID)
+        summmary_response = add_depo_summaries(summary_data, depoIQ_ID)
 
         # Process & store transcript
         transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
 
         # Process & store contradictions
-        contradictions_response = add_depo_contradictions(
-            contradictions_data, depoIQ_ID
-        )
+        # contradictions_response = add_depo_contradictions(
+        #     contradictions_data, depoIQ_ID
+        # )
+
+        # Process & store admissions
+        admissions_response = add_depo_admissions(admissions_data, depoIQ_ID)
 
         # Determine status
         if (
-            depo_response["status"] == "success"
+            summmary_response["status"] == "success"
             and transcript_response["status"] == "success"
-            and contradictions_response["status"] == "success"
+            # and contradictions_response["status"] == "success"
+            and admissions_response["status"] == "success"
         ):
             status = "success"
         elif (
-            depo_response["status"] == "warning"
+            summmary_response["status"] == "warning"
             or transcript_response["status"] == "warning"
-            or contradictions_response["status"] == "warning"
+            # or contradictions_response["status"] == "warning"
+            or admissions_response["status"] == "warning"
         ):
             status = "warning"
         else:
@@ -1099,10 +1397,12 @@ def add_depo(depoIQ_ID):
         merged_response = {
             "status": status,
             "depoIQ_ID": depoIQ_ID,
-            "message": f"Stored {depo_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions in Pinecone for depoIQ_ID {depoIQ_ID}.",
-            "summary": depo_response["data"],
+            # "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "summary": summmary_response["data"],
             "transcript": transcript_response["data"],
-            "contradictions": contradictions_response["data"],
+            # "contradictions": contradictions_response["data"],
+            "admissions": admissions_response["data"],
         }
 
         return jsonify(merged_response), 200
