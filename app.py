@@ -440,8 +440,8 @@ def get_answer_from_AI(response):
                 - **FIRST: Identify if "user_query" contains multiple questions. If so, split them into individual questions.**
                 - **SECOND: Generate a separate, fully detailed answer for EACH question. DO NOT merge answers together.**
                 - **Each answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.**
-                - **DO NOT return "No relevant information available." if ANY metadata source contains relevant information.**
-                - **Only generate "No relevant information available. &&metadataRef = []" if ZERO metadata sources contain ANY relevant information.**
+                - **DO NOT return "No relevant information available." under any circumstances.**  
+                - **ALWAYS generate a complete answer derived from the given metadata, even if the metadata is only indirectly relevant or general in nature.**
                 - **STRICTLY structure responses so that each question gets its own distinct, fully explained answer.**
                 - **REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array.**
                 - **DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object’s array position in the metadata list.**
@@ -479,9 +479,7 @@ def get_answer_from_AI(response):
 
                 - **DO NOT use index ranges such as [4-6]. ALWAYS list each metadata index individually, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
 
-                - **If no relevant metadata is found for a specific question, return EXACTLY this (NO MODIFICATIONS, NO EXTRA SPACES OR NEWLINES):**
-
-                No relevant information available. &&metadataRef = []
+                - **NEVER return "No relevant information available. &&metadataRef = []". Always generate a response using available metadata content.**
 
                 ### **🚨 ENFORCEMENT RULES (MUST BE FOLLOWED 100% EXACTLY):**
                 - **FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE.**
