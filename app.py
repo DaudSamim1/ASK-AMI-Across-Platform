@@ -13,6 +13,7 @@ import re
 import json
 from bs4 import BeautifulSoup
 from bson import ObjectId
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -131,26 +132,26 @@ def snake_to_camel(name, isSummary=True):
     return camel_case
 
 
-# Function to group by depoIQ_ID for Pinecone results
+# Function to group by depoiq_id for Pinecone results
 def group_by_depoIQ_ID(
     data, isSummary=False, isTranscript=False, isContradictions=False, isAdmission=False
 ):
     grouped_data = {}
     for entry in data:
-        depoIQ_ID = entry["depoIQ_ID"]
-        if depoIQ_ID not in grouped_data:
-            print(f"🔍 Fetching Depo: {depoIQ_ID} fro DB\n\n\n")
+        depoiq_id = entry["depoiq_id"]
+        if depoiq_id not in grouped_data:
+            print(f"🔍 Fetching Depo: {depoiq_id} fro DB\n\n\n")
 
             if isTranscript and not isSummary:
-                grouped_data[depoIQ_ID] = getDepoTranscript(depoIQ_ID)
+                grouped_data[depoiq_id] = getDepoTranscript(depoiq_id)
                 return grouped_data
 
             if isSummary and not isTranscript:
-                grouped_data[depoIQ_ID] = getDepoSummary(depoIQ_ID)
+                grouped_data[depoiq_id] = getDepoSummary(depoiq_id)
                 return grouped_data
 
             if isContradictions and not isSummary and not isTranscript:
-                grouped_data[depoIQ_ID] = getDepoContradictions(depoIQ_ID)
+                grouped_data[depoiq_id] = getDepoContradictions(depoiq_id)
                 return grouped_data
 
             if (
@@ -159,11 +160,11 @@ def group_by_depoIQ_ID(
                 and not isTranscript
                 and not isContradictions
             ):
-                grouped_data[depoIQ_ID] = getDepoAdmissions(depoIQ_ID)
+                grouped_data[depoiq_id] = getDepoAdmissions(depoiq_id)
                 return grouped_data
 
-            grouped_data[depoIQ_ID] = getDepo(
-                depoIQ_ID,
+            grouped_data[depoiq_id] = getDepo(
+                depoiq_id,
                 isSummary=True,
                 isTranscript=True,
                 isContradictions=True,
@@ -195,7 +196,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         filter_criteria = {}
         if depo_ids and len(depo_ids) > 0:
             # Add depo_id filter
-            filter_criteria["depoIQ_ID"] = {"$in": depo_ids}
+            filter_criteria["depoiq_id"] = {"$in": depo_ids}
             filter_criteria["category"] = {"$ne": contradiction_category}
 
         # Search in Pinecone
@@ -214,7 +215,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         # Extract matched results
         matched_results = [
             {
-                "depoIQ_ID": match["metadata"].get("depoIQ_ID"),
+                "depoiq_id": match["metadata"].get("depoiq_id"),
                 "category": match["metadata"]["category"],
                 "chunk_index": match["metadata"].get("chunk_index", None),
             }
@@ -223,7 +224,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
         print(f"Matched Results: {matched_results} \n\n\n")
 
-        # Group results by depoIQ_ID
+        # Group results by depoiq_id
         grouped_result = group_by_depoIQ_ID(
             matched_results, isSummary=True, isTranscript=True, isContradictions=True
         )
@@ -233,7 +234,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         custom_response = []  # Custom response
 
         for match in matched_results:
-            depoIQ_ID = match["depoIQ_ID"]
+            depoiq_id = match["depoiq_id"]
             category = match["category"]
             isSummary = (
                 category != transcript_category
@@ -244,7 +245,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
             isContradictions = category == contradiction_category
             isAdmission = category == admission_category
 
-            depo_data = grouped_result.get(depoIQ_ID, {})
+            depo_data = grouped_result.get(depoiq_id, {})
 
             if isSummary:
                 chunk_index = int(match["chunk_index"])
@@ -264,7 +265,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 )
                 custom_response.append(
                     {
-                        "depoIQ_ID": depoIQ_ID,
+                        "depoiq_id": depoiq_id,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
@@ -282,7 +283,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 ]
                 custom_response.append(
                     {
-                        "depoIQ_ID": depoIQ_ID,
+                        "depoiq_id": depoiq_id,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": " ".join(
@@ -311,7 +312,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
             #     text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
             #     custom_response.append(
             #         {
-            #             "depoIQ_ID": depoIQ_ID,
+            #             "depoiq_id": depoiq_id,
             #             "category": category,
             #             "chunk_index": chunk_index,
             #             "text": text,
@@ -334,7 +335,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
                 custom_response.append(
                     {
-                        "depoIQ_ID": depoIQ_ID,
+                        "depoiq_id": depoiq_id,
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
@@ -367,10 +368,10 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
         if is_unique:
             unique_set_response = {}
             for entry in rerank_response:
-                depoIQ_ID = entry["depoIQ_ID"]
-                if depoIQ_ID not in unique_set_response:
-                    unique_set_response[depoIQ_ID] = []
-                unique_set_response[depoIQ_ID].append(entry)
+                depoiq_id = entry["depoiq_id"]
+                if depoiq_id not in unique_set_response:
+                    unique_set_response[depoiq_id] = []
+                unique_set_response[depoiq_id].append(entry)
 
             unique_set_response_keys = list(unique_set_response.keys())
 
@@ -378,20 +379,20 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
             # Ensure we have exactly 8 entries in final_response
             while len(final_response) < 8:
-                for depoIQ_ID in unique_set_response_keys:
+                for depoiq_id in unique_set_response_keys:
                     if len(final_response) >= 8:
                         break
                     try:
-                        final_response.append(unique_set_response[depoIQ_ID].pop(0))
-                        # if not unique_set_response[depoIQ_ID]:
-                        #     unique_set_response_keys.remove(depoIQ_ID)
+                        final_response.append(unique_set_response[depoiq_id].pop(0))
+                        # if not unique_set_response[depoiq_id]:
+                        #     unique_set_response_keys.remove(depoiq_id)
                     except IndexError:
                         continue
 
             return {
                 "status": "success",
                 "user_query": query_text,
-                "depoIQ_ID": unique_set_response_keys,
+                "depoiq_id": unique_set_response_keys,
                 "metadata": final_response,
                 "is_unique": is_unique,
             }
@@ -402,7 +403,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
             response = {
                 "status": "success",
                 "user_query": query_text,
-                "depoIQ_ID": grouped_result_keys,
+                "depoiq_id": grouped_result_keys,
                 "metadata": rerank_response,
                 "is_unique": is_unique,
             }
@@ -418,7 +419,7 @@ def get_answer_from_AI(response):
     try:
         # Construct prompt
         prompt = f"""
-                You are an AI assistant that extracts precise and relevant answers from multiple transcript sources.
+                You are an AI-specialized interactive bot working for a major US law firm that answers user questions. Users might want to extract data from legal depositions or ask a broad set of questions using natural language commands. Your task is to analyze `"metadata"` and the `"user_query"` , and then generate a detailed and relevant answer.
 
                 ### **Task:**
                 - Analyze the provided "metadata" and generate direct, relevant, and **fully explained answers** for each question in "user_query".
@@ -427,7 +428,7 @@ def get_answer_from_AI(response):
                 - Use the "text" field in "metadata" to form the most **detailed and informative** responses.
                 - Ensure the generated responses **fully explain** each answer instead of providing short, incomplete summaries.
                 - **Each answer must be at least 400 characters long but can exceed this if necessary.**
-                - Reference the source by indicating all "metadata" **OBJECT POSITIONS IN THE ARRAY (NOT chunk_index, IDs, or any other identifiers).**
+                - Reference the source by indicating all "metadata" **OBJECT POSITIONS IN THE ARRAY (NOT chunk_index, IDs, or any other identifiers).** The index MUST start from 0.
 
                 ---
 
@@ -443,10 +444,10 @@ def get_answer_from_AI(response):
                 - **DO NOT return "No relevant information available." under any circumstances.**  
                 - **ALWAYS generate a complete answer derived from the given metadata, even if the metadata is only indirectly relevant or general in nature.**
                 - **STRICTLY structure responses so that each question gets its own distinct, fully explained answer.**
-                - **REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array.**
-                - **DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object’s array position in the metadata list.**
+                - **REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array, STARTING FROM 0.**
+                - **DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object's array position in the metadata list, beginning with index 0.**
                 - **DO NOT use index ranges such as [4-6]. ALWAYS list individual indices explicitly, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
-                - **INDEX POSITIONS must correspond exactly to each metadata item’s position in the "metadata" array as provided.**
+                - **INDEX POSITIONS must correspond exactly to each metadata item's position in the "metadata" array as provided, starting from 0.**
                 - **DO NOT OMIT &&metadataRef =. It MUST always be included at the end of the answer.**
                 - **DO NOT add newline characters (\\n) before or after the response. The response must be in a SINGLE, FLAT LINE.**
                 - **DO NOT enclose the response inside triple quotes (''', "" ") or markdown-style code blocks (``` ). Return it as PLAIN TEXT ONLY.**
@@ -485,7 +486,6 @@ def get_answer_from_AI(response):
                 - **FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE.**
                 """
 
-
         # Call GPT-3.5 API with parameters for consistency
         ai_response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -515,7 +515,7 @@ def get_answer_from_AI(response):
 
 # Function to get Depo from DepoIQ_ID
 def getDepo(
-    depoIQ_ID,
+    depoiq_id,
     isSummary=True,
     isTranscript=True,
     isContradictions=True,
@@ -604,7 +604,7 @@ def getDepo(
         payload = {
             "query": query,
             "variables": {
-                "depoId": depoIQ_ID,
+                "depoId": depoiq_id,
                 "includeSummary": isSummary,
                 "includeTranscript": isTranscript,
                 "includeContradictions": isContradictions,
@@ -633,11 +633,11 @@ def getDepo(
 
 
 # Function to generate to Get Summary from Depo
-def getDepoSummary(depoIQ_ID):
+def getDepoSummary(depoiq_id):
     """Get Depo Summary from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=True,
             isTranscript=False,
             isContradictions=False,
@@ -650,11 +650,11 @@ def getDepoSummary(depoIQ_ID):
 
 
 # Function to generate Get Transcript from Depo
-def getDepoTranscript(depoIQ_ID):
+def getDepoTranscript(depoiq_id):
     """Get Depo Transcript from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=False,
             isTranscript=True,
             isContradictions=False,
@@ -667,11 +667,11 @@ def getDepoTranscript(depoIQ_ID):
 
 
 # Function to genrate Get Contradictions from Depo
-def getDepoContradictions(depoIQ_ID):
+def getDepoContradictions(depoiq_id):
     """Get Depo Contradictions from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=False,
             isTranscript=False,
             isContradictions=True,
@@ -684,11 +684,11 @@ def getDepoContradictions(depoIQ_ID):
 
 
 # Function to genrate Get Admissions from Depo
-def getDepoAdmissions(depoIQ_ID):
+def getDepoAdmissions(depoiq_id):
     """Get Depo Admissions from DepoIQ_ID"""
     try:
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=False,
             isTranscript=False,
             isContradictions=False,
@@ -750,13 +750,13 @@ def split_into_chunks(text, min_chunk_size=300, max_chunk_size=500):
 
 
 # Function to check if already exists in Pinecone
-def check_existing_entry(depoIQ_ID, category, chunk_index):
+def check_existing_entry(depoiq_id, category, chunk_index):
     """Checks if already exists in Pinecone."""
     try:
         existing_entries = depoIndex.query(
             vector=np.random.rand(1536).tolist(),  # Use a dummy query vector
             filter={
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "chunk_index": chunk_index,
                 "category": category,
             },
@@ -769,7 +769,7 @@ def check_existing_entry(depoIQ_ID, category, chunk_index):
 
 
 # Function to store summaries in Pinecone with embeddings
-def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
+def store_summaries_in_pinecone(depoiq_id, category, text_chunks):
     """Stores text chunks in Pinecone with embeddings."""
     vectors_to_upsert = []
     skipped_chunks = []
@@ -783,7 +783,7 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
             continue
 
         # Check if summary already exists
-        if check_existing_entry(depoIQ_ID, category, chunk_index):
+        if check_existing_entry(depoiq_id, category, chunk_index):
             skipped_chunks.append(chunk_index)
             print(f"⚠️ Summary already exists: {chunk_index}, skipping...\n\n\n\n")
             continue
@@ -797,9 +797,10 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
 
         # Metadata
         metadata = {
-            "depoIQ_ID": depoIQ_ID,
+            "depoiq_id": depoiq_id,
             "category": category,
             "chunk_index": chunk_index,
+            "created_at": datetime.now().isoformat(),
         }
 
         # Add to batch
@@ -822,7 +823,7 @@ def store_summaries_in_pinecone(depoIQ_ID, category, text_chunks):
     return len(vectors_to_upsert), skipped_chunks
 
 
-def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
+def store_transcript_lines_in_pinecone(depoiq_id, category, transcript_data):
     vectors_to_upsert = []
     skipped_chunks = []
     chunk_page_range = 3
@@ -837,7 +838,7 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
 
         # check if already exists in pinecone
         if check_existing_entry(
-            depoIQ_ID,
+            depoiq_id,
             category,
             chunk_index,
         ):
@@ -878,9 +879,10 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
 
         # Add the actual transcript text in metadata for retrieval
         metadata = {
-            "depoIQ_ID": depoIQ_ID,
+            "depoiq_id": depoiq_id,
             "category": category,
             "chunk_index": chunk_index,
+            "created_at": datetime.now().isoformat(),
         }
 
         vectors_to_upsert.append(
@@ -907,14 +909,14 @@ def store_transcript_lines_in_pinecone(depoIQ_ID, category, transcript_data):
     return len(vectors_to_upsert), skipped_chunks
 
 
-def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
+def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
     vectors_to_upsert = []
     skipped_chunks = []
     max_chunk_upsert = 30
 
     try:
         print(
-            f"🔹 Storing contradictions for depoIQ_ID: {depoIQ_ID} {len(contradictions_data)}"
+            f"🔹 Storing contradictions for depoiq_id: {depoiq_id} {len(contradictions_data)}"
         )
 
         for chunk_index in range(0, len(contradictions_data)):
@@ -924,7 +926,7 @@ def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
 
             # check if already exists in pinecone
             if check_existing_entry(
-                depoIQ_ID,
+                depoiq_id,
                 category,
                 chunk_index,
             ):
@@ -956,9 +958,10 @@ def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
 
             # Add the actual transcript text in metadata for retrieval
             metadata = {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "category": category,
                 "chunk_index": chunk_index,
+                "created_at": datetime.now().isoformat(),
             }
 
             # Add to batch
@@ -990,14 +993,14 @@ def store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data):
         return 0, []
 
 
-def store_admissions_in_pinecone(depoIQ_ID, category, admissions_data):
+def store_admissions_in_pinecone(depoiq_id, category, admissions_data):
     vectors_to_upsert = []
     skipped_chunks = []
     max_chunk_upsert = 30
 
     try:
         print(
-            f"🔹 Storing admissions for depoIQ_ID: {depoIQ_ID} {len(admissions_data)}"
+            f"🔹 Storing admissions for depoiq_id: {depoiq_id} {len(admissions_data)}"
         )
 
         for index in range(0, len(admissions_data)):
@@ -1014,7 +1017,7 @@ def store_admissions_in_pinecone(depoIQ_ID, category, admissions_data):
 
             # check if already exists in pinecone
             if check_existing_entry(
-                depoIQ_ID,
+                depoiq_id,
                 category,
                 chunk_index,
             ):
@@ -1041,9 +1044,10 @@ def store_admissions_in_pinecone(depoIQ_ID, category, admissions_data):
 
             # Add the actual transcript text in metadata for retrieval
             metadata = {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "category": category,
                 "chunk_index": chunk_index,
+                "created_at": datetime.now().isoformat(),
             }
 
             # Add to batch
@@ -1076,13 +1080,13 @@ def store_admissions_in_pinecone(depoIQ_ID, category, admissions_data):
 
 
 # Function to generate add depo summaries to pinecone
-def add_depo_summaries(depo_summary, depoIQ_ID):
+def add_depo_summaries(depo_summary, depoiq_id):
     try:
         excluded_keys = ["visualization"]
         total_inserted = 0
         skipped_sub_categories = {}
 
-        print(f"🔹 Adding summaries for depoIQ_ID: {depoIQ_ID}")
+        print(f"🔹 Adding summaries for depoiq_id: {depoiq_id}")
 
         for key, value in depo_summary.items():
             if key in excluded_keys:
@@ -1093,7 +1097,7 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
             text_chunks = split_into_chunks(text)  # Split into paragraphs
 
             inserted_count, skipped_chunks = store_summaries_in_pinecone(
-                depoIQ_ID, category, text_chunks
+                depoiq_id, category, text_chunks
             )
 
             total_inserted += inserted_count
@@ -1110,7 +1114,7 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
             "status": status,
             "message": "Summaries processed.",
             "data": {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "total_inserted": total_inserted,
                 "skipped_details": skipped_sub_categories,
                 "skipped_count": sum(len(v) for v in skipped_sub_categories.values()),
@@ -1127,15 +1131,15 @@ def add_depo_summaries(depo_summary, depoIQ_ID):
         }
 
 
-def add_depo_transcript(transcript_data, depoIQ_ID):
+def add_depo_transcript(transcript_data, depoiq_id):
     try:
-        print(f"🔹 Adding transcripts for depoIQ_ID: {depoIQ_ID}")
+        print(f"🔹 Adding transcripts for depoiq_id: {depoiq_id}")
         if not transcript_data:
             return {
                 "status": "warning",
                 "message": "No transcript data found.",
                 "data": {
-                    "depoIQ_ID": depoIQ_ID,
+                    "depoiq_id": depoiq_id,
                     "total_inserted": 0,
                     "skipped_details": [],
                     "skipped_count": 0,
@@ -1146,7 +1150,7 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
 
         # Store transcript data
         inserted_transcripts, skipped_transcripts = store_transcript_lines_in_pinecone(
-            depoIQ_ID, category, transcript_data
+            depoiq_id, category, transcript_data
         )
 
         if inserted_transcripts > 0:
@@ -1160,7 +1164,7 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
             "status": status,
             "message": "Transcripts processed.",
             "data": {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "total_inserted": inserted_transcripts,
                 "skipped_details": skipped_transcripts,
                 "skipped_count": len(skipped_transcripts),
@@ -1177,15 +1181,15 @@ def add_depo_transcript(transcript_data, depoIQ_ID):
         }
 
 
-def add_depo_contradictions(contradictions_data, depoIQ_ID):
+def add_depo_contradictions(contradictions_data, depoiq_id):
     try:
-        print(f"🔹 Adding contradictions for depoIQ_ID: {depoIQ_ID}")
+        print(f"🔹 Adding contradictions for depoiq_id: {depoiq_id}")
         if not contradictions_data:
             return {
                 "status": "warning",
                 "message": "No contradictions data found.",
                 "data": {
-                    "depoIQ_ID": depoIQ_ID,
+                    "depoiq_id": depoiq_id,
                     "total_inserted": 0,
                     "skipped_details": [],
                     "skipped_count": 0,
@@ -1196,7 +1200,7 @@ def add_depo_contradictions(contradictions_data, depoIQ_ID):
 
         # Store contradictions data
         inserted_contradictions, skipped_contradictions = (
-            store_contradictions_in_pinecone(depoIQ_ID, category, contradictions_data)
+            store_contradictions_in_pinecone(depoiq_id, category, contradictions_data)
         )
 
         print()
@@ -1212,7 +1216,7 @@ def add_depo_contradictions(contradictions_data, depoIQ_ID):
             "status": status,
             "message": "Contradictions processed.",
             "data": {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "total_inserted": inserted_contradictions,
                 "skipped_details": skipped_contradictions,
                 "skipped_count": len(skipped_contradictions),
@@ -1229,16 +1233,16 @@ def add_depo_contradictions(contradictions_data, depoIQ_ID):
         }
 
 
-def add_depo_admissions(admissions_data, depoIQ_ID):
+def add_depo_admissions(admissions_data, depoiq_id):
     try:
-        print(f"🔹 Adding admissions for depoIQ_ID: {depoIQ_ID}\n\n")
+        print(f"🔹 Adding admissions for depoiq_id: {depoiq_id}\n\n")
 
         if not admissions_data:
             return {
                 "status": "warning",
                 "message": "No admissions data found.",
                 "data": {
-                    "depoIQ_ID": depoIQ_ID,
+                    "depoiq_id": depoiq_id,
                     "total_inserted": 0,
                     "skipped_details": [],
                     "skipped_count": 0,
@@ -1249,7 +1253,7 @@ def add_depo_admissions(admissions_data, depoIQ_ID):
 
         # Store admissions data
         inserted_admissions, skipped_admissions = store_admissions_in_pinecone(
-            depoIQ_ID, category, admissions_data=admissions_data["text"]
+            depoiq_id, category, admissions_data=admissions_data["text"]
         )
 
         if inserted_admissions > 0:
@@ -1263,7 +1267,7 @@ def add_depo_admissions(admissions_data, depoIQ_ID):
             "status": status,
             "message": "Admissions processed.",
             "data": {
-                "depoIQ_ID": depoIQ_ID,
+                "depoiq_id": depoiq_id,
                 "total_inserted": inserted_admissions,
                 "skipped_details": skipped_admissions,
                 "skipped_count": len(skipped_admissions),
@@ -1286,15 +1290,15 @@ def home():
     return jsonify({"message": "Welcome to the Python Project API!"})
 
 
-@app.route("/depo/<string:depoIQ_ID>", methods=["GET"])
-def get_depo_by_Id(depoIQ_ID):
+@app.route("/depo/<string:depoiq_id>", methods=["GET"])
+def get_depo_by_Id(depoiq_id):
     """
-    Get Depo By depoIQ_ID
+    Get Depo By depoiq_id
     ---
     tags:
       - Depo
     parameters:
-      - name: depoIQ_ID
+      - name: depoiq_id
         in: path
         type: string
         required: true
@@ -1307,7 +1311,7 @@ def get_depo_by_Id(depoIQ_ID):
     """
     try:
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=True,
             isTranscript=True,
             isContradictions=True,
@@ -1324,15 +1328,15 @@ def get_depo_by_Id(depoIQ_ID):
         )
 
 
-@app.route("/depo/add/<string:depoIQ_ID>", methods=["GET"])
-def add_depo(depoIQ_ID):
+@app.route("/depo/add/<string:depoiq_id>", methods=["GET"])
+def add_depo(depoiq_id):
     """
     Get Summaries & Transcript & Contradictions & Admissions from Depo and store into Pinecone
     ---
     tags:
       - Depo
     parameters:
-      - name: depoIQ_ID
+      - name: depoiq_id
         in: path
         type: string
         required: true
@@ -1346,7 +1350,7 @@ def add_depo(depoIQ_ID):
     try:
         # Get depo data
         depo = getDepo(
-            depoIQ_ID,
+            depoiq_id,
             isSummary=True,
             isTranscript=True,
             isContradictions=True,
@@ -1360,18 +1364,18 @@ def add_depo(depoIQ_ID):
         admissions_data = depo.get("admissions", [])
 
         # Process & store summaries
-        summmary_response = add_depo_summaries(summary_data, depoIQ_ID)
+        summmary_response = add_depo_summaries(summary_data, depoiq_id)
 
         # Process & store transcript
-        transcript_response = add_depo_transcript(transcript_data, depoIQ_ID)
+        transcript_response = add_depo_transcript(transcript_data, depoiq_id)
 
         # Process & store contradictions
         # contradictions_response = add_depo_contradictions(
-        #     contradictions_data, depoIQ_ID
+        #     contradictions_data, depoiq_id
         # )
 
         # Process & store admissions
-        admissions_response = add_depo_admissions(admissions_data, depoIQ_ID)
+        admissions_response = add_depo_admissions(admissions_data, depoiq_id)
 
         # Determine status
         if (
@@ -1394,9 +1398,9 @@ def add_depo(depoIQ_ID):
         # Merge responses
         merged_response = {
             "status": status,
-            "depoIQ_ID": depoIQ_ID,
-            # "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoIQ_ID {depoIQ_ID}.",
-            "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoIQ_ID {depoIQ_ID}.",
+            "depoiq_id": depoiq_id,
+            # "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoiq_id {depoiq_id}.",
+            "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoiq_id {depoiq_id}.",
             "summary": summmary_response["data"],
             "transcript": transcript_response["data"],
             # "contradictions": contradictions_response["data"],
@@ -1422,7 +1426,7 @@ def add_depo(depoIQ_ID):
 @app.route("/depo/talk", methods=["POST"])
 def talk_summary():
     """
-    Talk to depo summaries & transcript by depoIQ_IDs
+    Talk to depo summaries & transcript by depoiq_ids
     ---
     tags:
       - Depo
@@ -1433,7 +1437,7 @@ def talk_summary():
         schema:
           type: object
           properties:
-            depoIQ_IDs:
+            depoiq_ids:
               type: array
               items:
                 type: string
@@ -1450,24 +1454,24 @@ def talk_summary():
         if not data:
             return jsonify({"error": "Invalid request, JSON body required"}), 400
 
-        depoIQ_IDs = data.get("depoIQ_IDs")
+        depoiq_ids = data.get("depoiq_ids")
         user_query = data.get("user_query")
         is_unique = data.get("is_unique", False)
 
-        if depoIQ_IDs:
+        if depoiq_ids:
             if not user_query:
                 return jsonify({"error": "Missing user_query"}), 400
 
-            if len(depoIQ_IDs) == 0:
-                return jsonify({"error": "Missing depoIQ_IDs list"}), 400
+            if len(depoiq_ids) == 0:
+                return jsonify({"error": "Missing depoiq_ids list"}), 400
 
-            if len(depoIQ_IDs) > 8:
-                return jsonify({"error": "Too many depoIQ_IDs, max 8"}), 400
+            if len(depoiq_ids) > 8:
+                return jsonify({"error": "Too many depoiq_ids, max 8"}), 400
             # check all ids are valid and mongo Id
-            for depo_id in depoIQ_IDs:
+            for depo_id in depoiq_ids:
                 if not ObjectId.is_valid(depo_id):
                     return jsonify({"error": "Invalid depo_id " + depo_id}), 400
-            depoIQ_IDs_array_length = len(depoIQ_IDs) * 3
+            depoIQ_IDs_array_length = len(depoiq_ids) * 3
         else:
             depoIQ_IDs_array_length = 24
 
@@ -1475,7 +1479,7 @@ def talk_summary():
 
         # ✅ Query Pinecone Safely
         query_pinecone_response = query_pinecone(
-            user_query, depoIQ_IDs, top_k=top_k, is_unique=is_unique
+            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique
         )
 
         print(
