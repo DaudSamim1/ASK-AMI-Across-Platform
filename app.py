@@ -1962,7 +1962,7 @@ def answer_validator():
         questions = data.get("questions")
         depoiq_id = data.get("depoiq_id")
         category = data.get("category")
-        is_download = data.get("is_download", False)
+        is_download = data.get("is_download", True)
 
         if not questions:
             return jsonify({"error": "Missing questions"}), 400
