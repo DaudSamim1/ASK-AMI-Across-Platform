@@ -1968,11 +1968,6 @@ def answer_validator():
               type: string
               value: "all"
               enum: ["text", "keywords", "synonyms", "all"]
-            is_download:
-                type: boolean
-            top_k:
-                type: number
-                default: 8
     responses:
       200:
         description: Returns the success message
@@ -1986,7 +1981,7 @@ def answer_validator():
         depoiq_id = data.get("depoiq_id")
         category = data.get("category", "all")
         is_download = data.get("is_download", True)
-        top_k = data.get("top_k", 8)
+        top_k = data.get("top_k", 10)
 
         if not questions:
             return jsonify({"error": "Missing questions"}), 400
