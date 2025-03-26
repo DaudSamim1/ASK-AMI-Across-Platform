@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flasgger import Swagger
 import requests
 import jwt
@@ -14,6 +14,8 @@ import json
 from bs4 import BeautifulSoup
 from bson import ObjectId
 from datetime import datetime
+import csv
+import io
 
 # Load environment variables from .env file
 load_dotenv()
@@ -115,6 +117,17 @@ def generate_embedding(text):
         return False
 
 
+def generate_batch_embeddings(text_list):
+    try:
+        response = openai_client.embeddings.create(
+            input=text_list, model="text-embedding-3-small"
+        )
+        return [item.embedding for item in response.data]
+    except Exception as e:
+        print(f"Batch embedding error: {e}")
+        return [None] * len(text_list)
+
+
 # Function to convert camelCase to snake_case
 def camel_to_snake(name):
     snake_case = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
@@ -174,12 +187,86 @@ def group_by_depoIQ_ID(
     return grouped_data
 
 
+def extract_keywords_and_synonyms(text):
+    try:
+        prompt = f"""
+        You are an AI-specialised interactive bot working for a major US law firm. Your task is to perform two steps on the provided text:
+
+        1. Extract all keywords from the text which may be relevant to a legal case. Only include keywords that are present in the text.
+        2. For each keyword, generate 2 synonyms or closely related terms that could help in legal query searches.
+
+        Format your output exactly like this:
+        Keywords: keyword1, keyword2, keyword3, ...
+        Synonyms:
+        keyword1: synonym1, synonym2
+        keyword2: synonym1, synonym2
+        keyword3: synonym1, synonym2
+
+        Text:
+        {text}
+        """
+
+        response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            temperature=0.3,
+        )
+
+        full_text = response.choices[0].message.content.strip()
+        lines = full_text.splitlines()
+
+        # Extract keywords list
+        keywords_line = next(
+            (line for line in lines if line.startswith("Keywords:")), ""
+        )
+        keywords = [
+            kw.strip()
+            for kw in keywords_line.replace("Keywords:", "").split(",")
+            if kw.strip()
+        ]
+
+        # Extract synonyms into a flat list
+        synonyms = []
+        for line in lines:
+            if (
+                ":" in line
+                and not line.startswith("Keywords:")
+                and not line.startswith("Synonyms:")
+            ):
+                _, syns = line.split(":", 1)
+                synonyms.extend([s.strip() for s in syns.split(",") if s.strip()])
+
+        # convert keywords and synonyms into a string
+        keywords = ", ".join(keywords)
+        synonyms = ", ".join(synonyms)
+
+        return keywords, synonyms
+
+    except Exception as e:
+        print(f"Error extracting keywords and synonyms: {e}")
+        return [], []
+
+
 # Function to query Pinecone and match return top k results
-def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
+def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False, category=None):
     try:
         print(
             f"\n🔍 Querying Pinecone for : query_text-> '{query_text}' (depo_id->: {depo_ids})\n\n\n"
         )
+
+        # keywords, synonyms = extract_keywords_and_synonyms(query_text)
+
+        # print(
+        #     f"\n\n\n\nExtracted Keywords: for {query_text} ->\n\n {keywords} -> {synonyms} \n\n\n\n\n"
+        # )
+
+        # return json.dumps(
+        #     {
+        #         "status": "error",
+        #         "message": "Failed to extract keywords and synonyms.",
+        #     }
+        # )
 
         # Generate query embedding
         query_vector = generate_embedding(query_text)
@@ -191,13 +278,20 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
         # Define filter criteria (search within `depo_id`)
         transcript_category = "transcript"
-        contradiction_category = "contradiction"
-        admission_category = "admission"
+        contradiction_category = "contradictions"
+        admission_category = "admissions"
         filter_criteria = {}
         if depo_ids and len(depo_ids) > 0:
             # Add depo_id filter
             filter_criteria["depoiq_id"] = {"$in": depo_ids}
-            filter_criteria["category"] = {"$ne": contradiction_category}
+            if category:
+                if category == "text":
+                    filter_criteria["is_keywords"] = {"$ne": True}
+                    filter_criteria["is_synonyms"] = {"$ne": True}
+                elif category == "keywords":
+                    filter_criteria["is_keywords"] = {"$eq": True}
+                elif category == "synonyms":
+                    filter_criteria["is_synonyms"] = {"$eq": True}
 
         # Search in Pinecone
         results = depoIndex.query(
@@ -218,6 +312,11 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 "depoiq_id": match["metadata"].get("depoiq_id"),
                 "category": match["metadata"]["category"],
                 "chunk_index": match["metadata"].get("chunk_index", None),
+                "created_at": match["metadata"].get("created_at", None),
+                "is_keywords": match["metadata"].get("is_keywords", False),
+                "is_synonyms": match["metadata"].get("is_synonyms", False),
+                "keywords": match["metadata"].get("keywords", None),
+                "synonyms_keywords": match["metadata"].get("synonyms_keywords", None),
             }
             for match in results.get("matches", [])
         ]
@@ -252,6 +351,10 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 db_category = snake_to_camel(category, isSummary=False)
                 db_category_2 = snake_to_camel(category)
                 summaries = depo_data.get("summary", {})
+                is_keywords = match["is_keywords"]
+                is_synonyms = match["is_synonyms"]
+                keywords = match["keywords"]
+                synonyms_keywords = match["synonyms_keywords"]
 
                 db_text = (
                     summaries.get(db_category)
@@ -269,6 +372,10 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
+                        "is_keywords": is_keywords,
+                        "is_synonyms": is_synonyms,
+                        "keywords": keywords,
+                        "synonyms_keywords": synonyms_keywords,
                     }
                 )
 
@@ -276,11 +383,16 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 chunk_index = match["chunk_index"]
                 start_page, end_page = map(int, chunk_index.split("-"))
                 transcripts = depo_data.get("transcript", {})
+                is_keywords = match["is_keywords"]
+                is_synonyms = match["is_synonyms"]
+                keywords = match["keywords"]
+                synonyms_keywords = match["synonyms_keywords"]
                 pages = [
                     page
                     for page in transcripts
                     if start_page <= page["pageNumber"] <= end_page
                 ]
+
                 custom_response.append(
                     {
                         "depoiq_id": depoiq_id,
@@ -294,17 +406,21 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                                 if line["lineText"].strip()
                             ]
                         ),
+                        "is_keywords": is_keywords,
+                        "is_synonyms": is_synonyms,
+                        "keywords": keywords,
+                        "synonyms_keywords": synonyms_keywords,
                     }
                 )
 
             # if isContradictions:
             #     chunk_index = match["chunk_index"]
             #     contradictions = depo_data.get("contradictions", {})
-            #     contradiction = contradictions[int(chunk_index)]
-            #     reason = contradiction.get("reason")
-            #     initial_question = contradiction.get("initial_question")
-            #     initial_answer = contradiction.get("initial_answer")
-            #     contradictory_responses = contradiction.get("contradictory_responses")
+            #     contradictions = contradictions[int(chunk_index)]
+            #     reason = contradictions.get("reason")
+            #     initial_question = contradictions.get("initial_question")
+            #     initial_answer = contradictions.get("initial_answer")
+            #     contradictory_responses = contradictions.get("contradictory_responses")
             #     contradictory_responses_string = ""
             #     for contradictory_response in contradictory_responses:
             #         contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
@@ -322,15 +438,19 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
             if isAdmission:
                 chunk_index = match["chunk_index"]
                 admissions = depo_data.get("admissions", {})
+                is_keywords = match["is_keywords"]
+                is_synonyms = match["is_synonyms"]
+                keywords = match["keywords"]
+                synonyms_keywords = match["synonyms_keywords"]
 
-                [admission] = [
-                    admission
-                    for admission in admissions["text"]
-                    if admission["admission_id"] == chunk_index
+                [admissions] = [
+                    admissions
+                    for admissions in admissions["text"]
+                    if admissions["admission_id"] == chunk_index
                 ]
-                reason = admission.get("reason")
-                question = admission.get("question")
-                answer = admission.get("answer")
+                reason = admissions.get("reason")
+                question = admissions.get("question")
+                answer = admissions.get("answer")
                 text = f"Question: {question} Answer: {answer} Reason:  {reason}"
 
                 custom_response.append(
@@ -339,35 +459,39 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                         "category": category,
                         "chunk_index": chunk_index,
                         "text": text,
+                        "is_keywords": is_keywords,
+                        "is_synonyms": is_synonyms,
+                        "keywords": keywords,
+                        "synonyms_keywords": synonyms_keywords,
                     }
                 )
 
-        text_list = [entry["text"] for entry in custom_response]
+        # text_list = [entry["text"] for entry in custom_response]
         # print(f"\n\n\n\n\nText List: {text_list} \n\n\n\n\n")
 
         # Instantiate the Pinecone client
-        pc = Pinecone(api_key=PINECONE_API_KEY)
+        # pc = Pinecone(api_key=PINECONE_API_KEY)
 
-        from pinecone import RerankModel
+        # from pinecone import RerankModel
 
-        # Perform reranking to get top_n results based on the query
-        reranked_results = pc.inference.rerank(
-            model=RerankModel.Bge_Reranker_V2_M3,
-            query=query_text,
-            documents=text_list,
-            top_n=top_k if is_unique else 8,
-            return_documents=True,
-        )
+        # # Perform reranking to get top_n results based on the query
+        # reranked_results = pc.inference.rerank(
+        #     model=RerankModel.Bge_Reranker_V2_M3,
+        #     query=query_text,
+        #     documents=text_list,
+        #     top_n=top_k if is_unique else 8,
+        #     return_documents=True,
+        # )
 
-        rerank_response = []
-        for rank_match in reranked_results.data:
-            index = rank_match.index
-            response = custom_response[index]
-            rerank_response.append(response)
+        # rerank_response = []
+        # for rank_match in reranked_results.data:
+        #     index = rank_match.index
+        #     response = custom_response[index]
+        #     rerank_response.append(response)
 
         if is_unique:
             unique_set_response = {}
-            for entry in rerank_response:
+            for entry in custom_response:
                 depoiq_id = entry["depoiq_id"]
                 if depoiq_id not in unique_set_response:
                     unique_set_response[depoiq_id] = []
@@ -404,7 +528,7 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
                 "status": "success",
                 "user_query": query_text,
                 "depoiq_id": grouped_result_keys,
-                "metadata": rerank_response,
+                "metadata": custom_response,
                 "is_unique": is_unique,
             }
 
@@ -417,58 +541,75 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False):
 
 def get_answer_from_AI(response):
     try:
+        text_list = [entry["text"] for entry in response["metadata"]]
         # Construct prompt
         prompt = f"""
                 You are an AI-specialized interactive bot working for a major US law firm that answers user questions. Users might want to extract data from legal depositions or ask a broad set of questions using natural language commands. Your task is to analyze `"metadata"` and the `"user_query"` , and then generate a detailed and relevant answer.
 
-                ### **Task:**
-                - Analyze the provided "metadata" and generate direct, relevant, and **fully explained answers** for each question in "user_query".
-                - **If "user_query" contains multiple questions, detect and SEPARATE each sub-question into its own distinct response.**
-                - **Each sub-question must be answered separately, clearly, and thoroughly.**
-                - Use the "text" field in "metadata" to form the most **detailed and informative** responses.
-                - Ensure the generated responses **fully explain** each answer instead of providing short, incomplete summaries.
-                - **Each answer must be at least 400 characters long but can exceed this if necessary.**
-                - Reference the source by indicating all "metadata" **OBJECT POSITIONS IN THE ARRAY (NOT chunk_index, IDs, or any other identifiers).** The index MUST start from 0.
+                ### Task:
+                - Analyze the provided "metadata" and generate direct, relevant, and fully explained answers for each question in "user_query".
+                - If "user_query" contains multiple questions, detect and SEPARATE each sub-question into its own distinct response.
+                - Each sub-question must be answered separately, clearly, and thoroughly.
+                - Use the "text" field in "metadata" to form the most detailed and informative responses.
+                - Ensure the generated responses fully explain each answer instead of providing short, incomplete summaries.
+                - If multiple metadata entries contain relevant but distinct information, generate SEPARATE, COMPLETE ANSWERS for each one. Do not merge multiple references into one response.
+                - Each answer must be at least 400 characters long but can exceed this if necessary.
+                - Reference the source by indicating all "metadata" OBJECT POSITIONS IN THE ARRAY (NOT chunk_index, IDs, or any other identifiers). The index MUST start from 0.
 
                 ---
 
-                ### **Given Data:**
-                {json.dumps(response)}
+                ### Given Data:
+                {json.dumps({
+                    "user_query": response["user_query"],
+                    "metadata": text_list,
+                })}
 
                 ---
 
-                ### **🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):**
-                - **FIRST: Identify if "user_query" contains multiple questions. If so, split them into individual questions.**
-                - **SECOND: Generate a separate, fully detailed answer for EACH question. DO NOT merge answers together.**
-                - **Each answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.**
-                - **DO NOT return "No relevant information available." under any circumstances.**  
-                - **ALWAYS generate a complete answer derived from the given metadata, even if the metadata is only indirectly relevant or general in nature.**
-                - **STRICTLY structure responses so that each question gets its own distinct, fully explained answer.**
-                - **REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array, STARTING FROM 0.**
-                - **DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object's array position in the metadata list, beginning with index 0.**
-                - **DO NOT use index ranges such as [4-6]. ALWAYS list individual indices explicitly, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
-                - **INDEX POSITIONS must correspond exactly to each metadata item's position in the "metadata" array as provided, starting from 0.**
-                - **DO NOT OMIT &&metadataRef =. It MUST always be included at the end of the answer.**
-                - **DO NOT add newline characters (\\n) before or after the response. The response must be in a SINGLE, FLAT LINE.**
-                - **DO NOT enclose the response inside triple quotes (''', "" ") or markdown-style code blocks (``` ). Return it as PLAIN TEXT ONLY.**
-                - **DO NOT add unnecessary labels like "Extracted Answer:" or "Answer:". The response must start directly with the extracted answer.**
-                - **DO NOT format the response as JSON, XML, or any structured format—return plain text only.**
-                - **DO NOT change sentence structure unless strictly necessary to form a complete, grammatically correct sentence.**
-                - **FORCE OUTPUT AS A CLEAN, SINGLE LINE WITH NO EXTRA WHITESPACES OR NEWLINES.**
-                - **ENSURE EACH ANSWER IS FULLY EXPLAINED, PROVIDING DETAILED CONTEXT SO THE USER GETS COMPLETE INFORMATION.**
-                - **ENSURE EVERY RESPONSE CONTAINS AT LEAST 400 CHARACTERS. IF NECESSARY, ADD ADDITIONAL CONTEXT TO REACH THIS MINIMUM LENGTH.**
-                - **DO NOT GROUP MULTIPLE QUESTIONS INTO A SINGLE ANSWER. EACH MUST BE SEPARATE.**
+                ### 🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):
+                - FIRST: Identify if "user_query" contains multiple questions. If so, split them into individual questions.
+                - SECOND: Generate a separate, fully detailed answer for EACH question. DO NOT merge answers together.
+                - Each answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.
+                - DO NOT return "No relevant information available." under any circumstances.  
+                - ALWAYS generate a complete answer derived from the given metadata, even if the metadata is only indirectly relevant or general in nature.
+                - STRICTLY structure responses so that each question gets its own distinct, fully explained answer.
+                - IF MULTIPLE METADATA OBJECTS ARE RELEVANT TO A QUESTION AND CONTAIN DIFFERENT INFORMATION, RETURN SEPARATE ANSWERS FOR EACH ONE. DO NOT COMBINE.
+                - REFERENCE SOURCES USING ONLY OBJECT POSITIONS in the metadata array. These are the indices corresponding to the order of appearance of metadata items in the array, STARTING FROM 0.
+                - DO NOT use chunk_index, IDs, hashes, or any other values. ONLY the object's array position in the metadata list, beginning with index 0.
+                - DO NOT use index ranges such as [4-6]. ALWAYS list individual indices explicitly, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.
+                - INDEX POSITIONS must correspond exactly to each metadata item's position in the "metadata" array as provided, starting from index 0.
+                - DO NOT OMIT &&metadataRef =. It MUST always be included at the end of the answer.
+                - DO NOT add newline characters (\\n) before or after the response. The response must be in a SINGLE, FLAT LINE.
+                - DO NOT enclose the response inside triple quotes (''', "") or markdown-style code blocks (``` ). Return it as PLAIN TEXT ONLY.
+                - DO NOT add unnecessary labels like "Extracted Answer:" or "Answer:". The response must start directly with the extracted answer text.
+                - DO NOT add special characters, bullets, or formatting like bold/italics at the beginning of the answers. DO NOT start with **, ###, or anything else.
+                - DO NOT use or mention phrases like “(metadata index X)” or similar — NOT at the beginning, middle, or end of the response. The ONLY valid way to reference metadata is: &&metadataRef = [X].
 
                 ---
 
-                ### **🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):**
+                ### 🚨 ENFORCEMENT RULES (MUST BE FOLLOWED WITH 100% ACCURACY):
+                - STRICTLY follow the instructions provided above. Deviating from the instructions will result in rejection of the response.
+                - DO NOT format the metadata references as (metadata index X) or similar — NEVER use that format in any part of the answer. The ONLY acceptable format is &&metadataRef = [X].
+                - FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE UNDER ANY CIRCUMSTANCES.  
+                - STRICTLY CHECK IF THE USER QUERY CONTAINS MULTIPLE QUESTIONS. IF YES, EACH SUB-QUESTION MUST BE IDENTIFIED AND ANSWERED SEPARATELY.  
+                - FOR EVERY SUB-QUESTION, IF MULTIPLE METADATA OBJECTS CONTAIN RELEVANT INFORMATION, GENERATE A SEPARATE DETAILED ANSWER FOR EACH OBJECT.
+                - DO NOT COMBINE MULTIPLE OBJECTS INTO ONE RESPONSE IF THEY CONTAIN DISTINCT INFORMATION. RETURN MULTIPLE ANSWERS ACCORDINGLY.
+                - ENSURE THAT ALL metadataRef INDEX (start from 0) VALUES USED IN RESPONSES ARE LESS THAN THE TOTAL LENGTH (0-{len(text_list)-1}) OF THE METADATA ARRAY. DO NOT GENERATE INDEXES THAT EXCEED THE ARRAY'S ACTUAL LENGTH.
+                - ENSURE THAT YOU DO NOT FORMAT THE METADATA REFERENCES INCORRECTLY. THE ONLY VALID FORMAT IS: &&metadataRef = [0, 3, 7]
+                - EVERY SINGLE ANSWER MUST BE A MINIMUM OF 400 CHARACTERS. IF NEEDED, EXPAND THE EXPLANATION TO REACH THIS THRESHOLD.
+                - DO NOT START ANY ANSWER WITH SPECIAL CHARACTERS OR FORMATTING LIKE **, ##, --, :, or bullet points. ANSWERS MUST START DIRECTLY WITH THE TEXT.
+                - DO NOT USE OR APPEND ANY VARIATION OF (metadata index X) AT THE END OR IN ANY PART OF THE RESPONSE. ONLY &&metadataRef = [X] IS ALLOWED.
 
-                <Detailed Answer for Question 1> &&metadataRef = [X, Y, Z]  
-                <Detailed Answer for Question 2> &&metadataRef = [A, B, C]  
-                <Detailed Answer for Question 3> &&metadataRef = [D, E, F]  
-                <Detailed Answer for Question 4> &&metadataRef = [G, H, I]  
+                ---
 
-                - **Example of Correct Output for Multiple Questions (DETAILED RESPONSES, NO NEWLINES, MINIMUM 400 CHARACTERS PER ANSWER):**
+                ### 🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):
+
+                <Detailed Answer for Question 1> &&metadataRef = [0]  
+                <Detailed Answer for Question 2> &&metadataRef = [4, 8]  
+                <Detailed Answer for Question 3> &&metadataRef = [1, 3, 5, 7]  
+                <Detailed Answer for Question 4> &&metadataRef = [8, 9]  
+
+                - Example of Correct Output for Multiple Questions (DETAILED RESPONSES, NO NEWLINES, MINIMUM 400 CHARACTERS PER ANSWER):
 
                 The expert witness deposed in this case was Mark Strassberg, M.D. He has significant experience in forensic psychiatry and has been involved in multiple legal cases, providing expert testimony. &&metadataRef = [0, 1]  
 
@@ -476,29 +617,75 @@ def get_answer_from_AI(response):
 
                 Dr. Strassberg was retained by Mr. Wilson for this case. Mr. Wilson has worked with Dr. Strassberg on multiple cases due to his specialization in forensic evaluations. &&metadataRef = [3]  
 
-                Dr. Strassberg has worked with Mr. Wilson approximately 5 or 6 times before this case. However, he did not keep records of previous engagements and could not recall specific details of past collaborations. &&metadataRef = [4]  
+                Dr. Strassberg has worked with Mr. Wilson approximately 5 or 6 times before this case. However, he did not keep records of previous engagements and could not recall specific details of past collaborations. &&metadataRef = [4]
+            """
 
-                - **DO NOT use index ranges such as [4-6]. ALWAYS list each metadata index individually, e.g., [4, 5, 6]. Range notation is STRICTLY FORBIDDEN.**
-
-                - **NEVER return "No relevant information available. &&metadataRef = []". Always generate a response using available metadata content.**
-
-                ### **🚨 ENFORCEMENT RULES (MUST BE FOLLOWED 100% EXACTLY):**
-                - **FORCE SEPARATE ANSWERS FOR EACH QUESTION IN THE QUERY. DO NOT COMBINE MULTIPLE QUESTIONS INTO A SINGLE RESPONSE.**
-                """
-
-        # Call GPT-3.5 API with parameters for consistency
+        # Call GPT-3.5 API with deterministic parameters for consistent responses
         ai_response = openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an AI assistant that extracts precise answers from multiple transcript sources efficiently and consistently. Your answers should be the same for identical queries.",
+                    "content": "You are an AI assistant that extracts precise answers from multiple transcript sources efficiently and consistently. Your answers must be deterministic and identical when given the same input.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=500,
+            max_tokens=1000,  # Increase if needed to avoid truncation
+            temperature=0,  # 🔐 Fully deterministic
+            top_p=1,  # 🔐 Disable nucleus sampling
+            frequency_penalty=0,  # 🔐 Avoid penalizing common phrases
+            presence_penalty=0,  # 🔐 Avoid bias toward novelty
+        )
+
+        # Extract plain text response
+        extracted_text = ai_response.choices[0].message.content.strip()
+
+        print(f"AI Response: {extracted_text} \n\n\n\n")
+
+        return extracted_text
+
+    except Exception as e:
+        print(f"Error querying Pinecone: {e}")
+        return str(e)
+
+
+def get_answer_score_from_AI(question, answer):
+    try:
+        # Construct prompt
+        prompt = f"""
+                You are an AI language model tasked with evaluating how relevant a given answer is to a specific question. Please carefully compare the QUESTION and ANSWER below. Use logical, semantic, and contextual understanding to decide how well the answer addresses the question.
+
+                Your response must be a SINGLE INTEGER between 1 and 10, based on the following criteria:
+
+                - 10 = Perfectly relevant and fully answers the question.
+                - 8–9 = Mostly relevant, may miss very minor details.
+                - 6–7 = Moderately relevant, addresses part of the question but lacks key context.
+                - 4–5 = Minimally relevant, some surface-level connection but largely incomplete.
+                - 2–3 = Barely relevant, vague or off-topic.
+                - 1 = Completely irrelevant.
+
+                DO NOT EXPLAIN. DO NOT ADD ANY TEXT. RETURN ONLY A SINGLE INTEGER (1–10) ON A NEW LINE.
+
+                QUESTION: {question}
+
+                ANSWER: {answer}
+                """
+
+        # Call GPT-3.5 API with deterministic parameters for consistent responses
+        ai_response = openai_client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that extracts precise answers from multiple transcript sources efficiently and consistently. Your answers must be deterministic and identical when given the same input.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=10,
             temperature=0,
-            top_p=0.1,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0,
         )
 
         # Extract plain text response
@@ -788,28 +975,76 @@ def store_summaries_in_pinecone(depoiq_id, category, text_chunks):
             print(f"⚠️ Summary already exists: {chunk_index}, skipping...\n\n\n\n")
             continue
 
-        # Generate embedding
-        embedding = generate_embedding(chunk_value)
+        # Extract keywords and synonyms
+        keywords, synonyms_keywords = extract_keywords_and_synonyms(chunk_value)
 
-        if not any(embedding):  # Check for all zero vectors
-            print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}\n\n\n\n")
-            continue
+        print(
+            f"\n\n\n\nExtracted Keywords: for {chunk_value} ->\n\n {keywords} \n\n\n\n\n"
+        )
+
+        # Generate embedding
+        embedding_text = generate_embedding(chunk_value)
+        embedding_keywords = generate_embedding(keywords)
+        embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
+
+        # Generate embeddings in batch
+        # embeddings = generate_batch_embeddings(
+        #     [chunk_value, " ".join(keywords), " ".join(synonyms_keywords)]
+        # )
+        # embedding_text, embedding_keywords, embedding_synonyms_keywords = embeddings
+
+        # if not any(embedding):  # Check for all zero vectors
+        #     print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}\n\n\n\n")
+        #     continue
 
         # Metadata
-        metadata = {
-            "depoiq_id": depoiq_id,
-            "category": category,
-            "chunk_index": chunk_index,
-            "created_at": datetime.now().isoformat(),
-        }
+        # metadata = {
+        #     "depoiq_id": depoiq_id,
+        #     "category": category,
+        #     "chunk_index": chunk_index,
+        #     "created_at": datetime.now().isoformat(),
+        # }
+
+        created_at = datetime.now().isoformat()
 
         # Add to batch
-        vectors_to_upsert.append(
-            {
-                "id": str(uuid.uuid4()),  # Unique ID
-                "values": embedding,  # Embedding vector
-                "metadata": metadata,  # Metadata
-            }
+        vectors_to_upsert.extend(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "values": embedding_text,
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                    },
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "values": embedding_keywords,
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                        "is_keywords": True,
+                        "keywords": keywords,
+                    },
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "values": embedding_synonyms_keywords,
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                        "is_synonyms": True,
+                        "synonyms_keywords": synonyms_keywords,
+                    },
+                },
+            ]
         )
 
     # Bulk upsert to Pinecone
@@ -826,8 +1061,9 @@ def store_summaries_in_pinecone(depoiq_id, category, text_chunks):
 def store_transcript_lines_in_pinecone(depoiq_id, category, transcript_data):
     vectors_to_upsert = []
     skipped_chunks = []
-    chunk_page_range = 3
-    max_chunk_upsert = 20
+    chunk_page_range = 5
+    max_chunk_upsert = 50
+    total_upserted = 0
 
     for i in range(0, len(transcript_data), chunk_page_range):
         grouped_pages = transcript_data[i : i + chunk_page_range]
@@ -869,50 +1105,101 @@ def store_transcript_lines_in_pinecone(depoiq_id, category, transcript_data):
             f"\n\n🔹 Storing text chunk (Pages {grouped_pages[0]['pageNumber']} - {grouped_pages[-1]['pageNumber']})\n\n"
         )
 
+        # Extract keywords and synonyms
+        keywords, synonyms_keywords = extract_keywords_and_synonyms(trimmed_text)
+
+        print(
+            f"\n\n\n\nExtracted Keywords: for {trimmed_text} ->\n\n {keywords} \n\n\n\n\n"
+        )
+
         # Generate embedding
-        embedding = generate_embedding(trimmed_text)
+        embedding_text = generate_embedding(trimmed_text)
+        embedding_keywords = generate_embedding(keywords)
+        embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
+
+        # Generate embeddings in batch
+        # embeddings = generate_batch_embeddings(
+        #     [trimmed_text, " ".join(keywords), " ".join(synonyms_keywords)]
+        # )
+        # embedding_text, embedding_keywords, embedding_synonyms_keywords = embeddings
 
         # Debug: Check if embedding is valid
-        if not any(embedding):
-            print(f"⚠️ Skipping empty embedding for pages {i+1}-{i+chunk_page_range}")
-            continue
+        # if not any(embedding):
+        #     print(f"⚠️ Skipping empty embedding for pages {i+1}-{i+chunk_page_range}")
+        #     continue
 
         # Add the actual transcript text in metadata for retrieval
-        metadata = {
-            "depoiq_id": depoiq_id,
-            "category": category,
-            "chunk_index": chunk_index,
-            "created_at": datetime.now().isoformat(),
-        }
+        # metadata = {
+        #     "depoiq_id": depoiq_id,
+        #     "category": category,
+        #     "chunk_index": chunk_index,
+        #     "created_at": datetime.now().isoformat(),
+        # }
 
-        vectors_to_upsert.append(
-            {
-                "id": str(uuid.uuid4()),  # Unique ID
-                "values": embedding,  # Embedding vector
-                "metadata": metadata,  # Metadata including the text
-            }
+        created_at = datetime.now().isoformat()
+
+        vectors_to_upsert.extend(
+            [
+                {
+                    "id": str(uuid.uuid4()),  # Unique ID
+                    "values": embedding_text,  # Embedding vector for text
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                    },
+                },
+                {
+                    "id": str(uuid.uuid4()),  # Unique ID
+                    "values": embedding_keywords,  # Embedding vector for keywords
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                        "is_keywords": True,
+                        "keywords": keywords,
+                    },
+                },
+                {
+                    "id": str(uuid.uuid4()),  # Unique ID
+                    "values": embedding_synonyms_keywords,  # Embedding vector for synonyms
+                    "metadata": {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "created_at": created_at,
+                        "is_synonyms": True,
+                        "synonyms_keywords": synonyms_keywords,
+                    },
+                },
+            ]
         )
 
         if len(vectors_to_upsert) >= max_chunk_upsert:
             depoIndex.upsert(vectors=vectors_to_upsert)
+            total_upserted += len(vectors_to_upsert)
             print(
-                f"✅ Successfully inserted {len(vectors_to_upsert)} transcript chunks in Pinecone.\n\n"
+                f"✅ Successfully inserted {total_upserted} transcript chunks in Pinecone.\n\n"
             )
             vectors_to_upsert = []
 
     if vectors_to_upsert:
         depoIndex.upsert(vectors=vectors_to_upsert)
+        total_upserted += len(vectors_to_upsert)
         print(
-            f"✅ Successfully inserted {len(vectors_to_upsert)} transcript chunks in Pinecone."
+            f"✅ Successfully inserted {total_upserted} transcript chunks in Pinecone."
         )
 
-    return len(vectors_to_upsert), skipped_chunks
+    return total_upserted, skipped_chunks
 
 
 def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
     vectors_to_upsert = []
     skipped_chunks = []
-    max_chunk_upsert = 30
+    max_chunk_upsert = 50
+    total_upserted = 0
 
     try:
         print(
@@ -920,9 +1207,9 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
         )
 
         for chunk_index in range(0, len(contradictions_data)):
-            contradiction = contradictions_data[chunk_index]
+            contradictions = contradictions_data[chunk_index]
 
-            print(f"\n\n 🔹 Storing contradiction: {chunk_index} \n\n\n\n")
+            print(f"\n\n 🔹 Storing contradictions: {chunk_index} \n\n\n\n")
 
             # check if already exists in pinecone
             if check_existing_entry(
@@ -936,23 +1223,29 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
                 )
                 continue
 
-            # Extract contradiction text, ensuring each line is properly formatted
-            reason = contradiction.get("reason")
-            contradictory_responses = contradiction.get("contradictory_responses")
-            initial_question = contradiction.get("initial_question")
-            initial_answer = contradiction.get("initial_answer")
+            # Extract contradictions text, ensuring each line is properly formatted
+            reason = contradictions.get("reason")
+            contradictory_responses = contradictions.get("contradictory_responses")
+            initial_question = contradictions.get("initial_question")
+            initial_answer = contradictions.get("initial_answer")
             contradictory_responses_string = ""
             for contradictory_response in contradictory_responses:
                 contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
 
             contradiction_text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
 
+            # keywords = extract_keywords_from_text(contradiction_text)
+
+            # print(
+            #     f"\n\n\n\nExtracted Keywords: for {contradiction_text} ->\n\n {keywords} \n\n\n\n\n"
+            # )
+
             # Generate embedding
             embedding = generate_embedding(contradiction_text)
 
             if not any(embedding):
                 print(
-                    f"⚠️ Skipping empty embedding for contradiction: {contradiction_text}"
+                    f"⚠️ Skipping empty embedding for contradictions: {contradiction_text}"
                 )
                 continue
 
@@ -975,18 +1268,20 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
 
             if len(vectors_to_upsert) >= max_chunk_upsert:
                 depoIndex.upsert(vectors=vectors_to_upsert)
+                total_upserted += len(vectors_to_upsert)
                 print(
-                    f"✅ Successfully inserted {len(vectors_to_upsert)} contradictions in Pinecone.\n\n"
+                    f"✅ Successfully inserted {total_upserted} contradictions in Pinecone.\n\n"
                 )
                 vectors_to_upsert = []
 
         if vectors_to_upsert:
             depoIndex.upsert(vectors=vectors_to_upsert)
+            total_upserted += len(vectors_to_upsert)
             print(
-                f"✅ Successfully inserted {len(vectors_to_upsert)} contradictions in Pinecone."
+                f"✅ Successfully inserted {total_upserted} contradictions in Pinecone."
             )
 
-        return len(vectors_to_upsert), skipped_chunks
+        return total_upserted, skipped_chunks
 
     except Exception as e:
         print(f"🔹 Error in store_contradictions_in_pinecone: {e}")
@@ -996,7 +1291,8 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
 def store_admissions_in_pinecone(depoiq_id, category, admissions_data):
     vectors_to_upsert = []
     skipped_chunks = []
-    max_chunk_upsert = 30
+    max_chunk_upsert = 50
+    total_upserted = 0
 
     try:
         print(
@@ -1004,16 +1300,16 @@ def store_admissions_in_pinecone(depoiq_id, category, admissions_data):
         )
 
         for index in range(0, len(admissions_data)):
-            admission = admissions_data[index]
-            chunk_index = admission.get("admission_id")
+            admissions = admissions_data[index]
+            chunk_index = admissions.get("admission_id")
 
             if chunk_index == None:
                 print(
-                    f"⚠️ Skipping admission: {admission} because chunk_index is None \n\n\n\n"
+                    f"⚠️ Skipping admissions: {admissions} because chunk_index is None \n\n\n\n"
                 )
                 continue
 
-            print(f"\n\n 🔹 Storing admission: {chunk_index} \n\n\n\n")
+            print(f"\n\n 🔹 Storing admissions: -> {index} ->  {chunk_index} \n\n\n\n")
 
             # check if already exists in pinecone
             if check_existing_entry(
@@ -1027,52 +1323,102 @@ def store_admissions_in_pinecone(depoiq_id, category, admissions_data):
                 )
                 continue
 
-            # Extract admission text, ensuring each line is properly formatted
-            reason = admission.get("reason")
-            question = admission.get("question")
-            answer = admission.get("answer")
+            # Extract admissions text, ensuring each line is properly formatted
+            reason = admissions.get("reason")
+            question = admissions.get("question")
+            answer = admissions.get("answer")
             admission_text = f"{question} {answer} {reason}"
 
             print(f"\n\n\n\n🔹 Admission text: {admission_text}\n\n\n\n\n")
 
-            # Generate embedding
-            embedding = generate_embedding(admission_text)
+            # Extract keywords and synonyms
+            keywords, synonyms_keywords = extract_keywords_and_synonyms(admission_text)
 
-            if not any(embedding):
-                print(f"⚠️ Skipping empty embedding for admission: {admission_text}")
-                continue
+            print(
+                f"\n\n\n\nExtracted Keywords: for {admission_text} ->\n\n {keywords} \n\n\n\n\n"
+            )
+
+            # Generate embedding
+            embedding_text = generate_embedding(admission_text)
+            embedding_keywords = generate_embedding(keywords)
+            embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
+
+            # Generate embeddings in batch
+            # embeddings = generate_batch_embeddings(
+            #     [admission_text, " ".join(keywords), " ".join(synonyms_keywords)]
+            # )
+            # embedding_text, embedding_keywords, embedding_synonyms_keywords = embeddings
+
+            # if not any(embedding):
+            #     print(f"⚠️ Skipping empty embedding for admissions: {admission_text}")
+            #     continue
 
             # Add the actual transcript text in metadata for retrieval
-            metadata = {
-                "depoiq_id": depoiq_id,
-                "category": category,
-                "chunk_index": chunk_index,
-                "created_at": datetime.now().isoformat(),
-            }
+            # metadata = {
+            #     "depoiq_id": depoiq_id,
+            #     "category": category,
+            #     "chunk_index": chunk_index,
+            #     "created_at": datetime.now().isoformat(),
+            # }
+
+            created_at = datetime.now().isoformat()
 
             # Add to batch
-            vectors_to_upsert.append(
-                {
-                    "id": str(uuid.uuid4()),  # Unique ID
-                    "values": embedding,  # Embedding vector
-                    "metadata": metadata,  # Metadata including the text
-                }
+            vectors_to_upsert.extend(
+                [
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_text,  # Embedding vector for text
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                        },
+                    },
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_keywords,  # Embedding vector for keywords
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_keywords": True,
+                            "keywords": keywords,
+                        },
+                    },
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_synonyms_keywords,  # Embedding vector for synonyms
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_synonyms": True,
+                            "synonyms_keywords": synonyms_keywords,
+                        },
+                    },
+                ]
             )
 
             if len(vectors_to_upsert) >= max_chunk_upsert:
                 depoIndex.upsert(vectors=vectors_to_upsert)
+                total_upserted += len(vectors_to_upsert)
                 print(
-                    f"✅ Successfully inserted {len(vectors_to_upsert)} admissions in Pinecone."
+                    f"✅ Successfully inserted {total_upserted} admissions in Pinecone."
                 )
                 vectors_to_upsert = []
 
         if vectors_to_upsert:
             depoIndex.upsert(vectors=vectors_to_upsert)
+            total_upserted += len(vectors_to_upsert)
             print(
-                f"✅ Successfully inserted {len(vectors_to_upsert)} admissions in Pinecone.\n\n\n"
+                f"✅ Successfully inserted {total_upserted} admissions in Pinecone.\n\n\n"
             )
 
-        return len(vectors_to_upsert), skipped_chunks
+        return total_upserted, skipped_chunks
 
     except Exception as e:
         print(f"🔹 Error in store_admissions_in_pinecone: {e}")
@@ -1184,6 +1530,7 @@ def add_depo_transcript(transcript_data, depoiq_id):
 def add_depo_contradictions(contradictions_data, depoiq_id):
     try:
         print(f"🔹 Adding contradictions for depoiq_id: {depoiq_id}")
+
         if not contradictions_data:
             return {
                 "status": "warning",
@@ -1196,7 +1543,18 @@ def add_depo_contradictions(contradictions_data, depoiq_id):
                 },
             }
 
-        category = "contradiction"
+        category = "contradictions"
+
+        return {
+            "status": "warning",
+            "message": "Waiting for backend change",
+            "data": {
+                "depoiq_id": depoiq_id,
+                "total_inserted": 0,
+                "skipped_details": [],
+                "skipped_count": 0,
+            },
+        }
 
         # Store contradictions data
         inserted_contradictions, skipped_contradictions = (
@@ -1249,7 +1607,7 @@ def add_depo_admissions(admissions_data, depoiq_id):
                 },
             }
 
-        category = "admission"
+        category = "admissions"
 
         # Store admissions data
         inserted_admissions, skipped_admissions = store_admissions_in_pinecone(
@@ -1303,6 +1661,11 @@ def get_depo_by_Id(depoiq_id):
         type: string
         required: true
         description: The ID of the depo
+      - name: category
+        in: query
+        type: string
+        required: false
+        description: Optional category filter (e.g., summary, transcript, contradictions, admissions)
     responses:
       200:
         description: Returns the success message
@@ -1310,12 +1673,33 @@ def get_depo_by_Id(depoiq_id):
         description: Internal server error
     """
     try:
+
+        # get category from query params
+        category = request.args.get("category", None)
+
+        if category:
+            allowed_categories = [
+                "summary",
+                "transcript",
+                "contradictions",
+                "admissions",
+            ]
+            if category not in allowed_categories:
+                return (
+                    jsonify(
+                        {
+                            "error": "Invalid category. Should be 'summary', 'transcript', 'contradictions', or 'admissions'."
+                        }
+                    ),
+                    400,
+                )
+
         depo = getDepo(
             depoiq_id,
-            isSummary=True,
-            isTranscript=True,
-            isContradictions=True,
-            isAdmission=True,
+            isSummary=not category or category == "summary",
+            isTranscript=not category or category == "transcript",
+            isContradictions=not category or category == "contradictions",
+            isAdmission=not category or category == "admissions",
         )
         return jsonify(depo), 200
 
@@ -1341,6 +1725,11 @@ def add_depo(depoiq_id):
         type: string
         required: true
         description: The ID of the depo
+      - name: category
+        in: query
+        type: string
+        required: false
+        description: Optional category filter (e.g., summary, transcript, contradictions, admissions)
     responses:
       200:
         description: Returns the success message
@@ -1348,66 +1737,84 @@ def add_depo(depoiq_id):
         description: Internal server error
     """
     try:
-        # Get depo data
+        category = request.args.get("category", None)
+        allowed_categories = ["summary", "transcript", "contradictions", "admissions"]
+
+        if category and category not in allowed_categories:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid category. Should be 'summary', 'transcript', 'contradictions', or 'admissions'."
+                    }
+                ),
+                400,
+            )
+
+        # Fetch depo data
         depo = getDepo(
             depoiq_id,
-            isSummary=True,
-            isTranscript=True,
-            isContradictions=True,
-            isAdmission=True,
+            isSummary=not category or category == "summary",
+            isTranscript=not category or category == "transcript",
+            isContradictions=not category or category == "contradictions",
+            isAdmission=not category or category == "admissions",
         )
 
-        # Extract summary & transcript data
-        summary_data = depo.get("summary", {})
-        transcript_data = depo.get("transcript", [])
-        contradictions_data = depo.get("contradictions", [])
-        admissions_data = depo.get("admissions", [])
+        responses = {}
+        status_list = []
 
-        # Process & store summaries
-        summmary_response = add_depo_summaries(summary_data, depoiq_id)
+        # Dynamically call processing functions based on category
+        if not category or category == "summary":
+            summary_data = depo.get("summary", {})
+            summary_response = add_depo_summaries(summary_data, depoiq_id)
+            responses["summary"] = summary_response["data"]
+            status_list.append(summary_response["status"])
 
-        # Process & store transcript
-        transcript_response = add_depo_transcript(transcript_data, depoiq_id)
+        if not category or category == "transcript":
+            transcript_data = depo.get("transcript", [])
+            transcript_response = add_depo_transcript(transcript_data, depoiq_id)
+            responses["transcript"] = transcript_response["data"]
+            status_list.append(transcript_response["status"])
 
-        # Process & store contradictions
-        # contradictions_response = add_depo_contradictions(
-        #     contradictions_data, depoiq_id
-        # )
+        if not category or category == "contradictions":
+            contradictions_data = depo.get("contradictions", [])
+            contradiction_response = add_depo_contradictions(
+                contradictions_data, depoiq_id
+            )
+            responses["contradictions"] = contradiction_response["data"]
+            status_list.append(contradiction_response["status"])
 
-        # Process & store admissions
-        admissions_response = add_depo_admissions(admissions_data, depoiq_id)
+        if not category or category == "admissions":
+            admissions_data = depo.get("admissions", [])
+            admissions_response = add_depo_admissions(admissions_data, depoiq_id)
+            responses["admissions"] = admissions_response["data"]
+            status_list.append(admissions_response["status"])
 
-        # Determine status
-        if (
-            summmary_response["status"] == "success"
-            and transcript_response["status"] == "success"
-            # and contradictions_response["status"] == "success"
-            and admissions_response["status"] == "success"
-        ):
-            status = "success"
-        elif (
-            summmary_response["status"] == "warning"
-            or transcript_response["status"] == "warning"
-            # or contradictions_response["status"] == "warning"
-            or admissions_response["status"] == "warning"
-        ):
-            status = "warning"
+        # Determine overall status
+        if all(status == "success" for status in status_list):
+            overall_status = "success"
+        elif any(status == "warning" for status in status_list):
+            overall_status = "warning"
         else:
-            status = "error"
+            overall_status = "error"
 
-        # Merge responses
-        merged_response = {
-            "status": status,
-            "depoiq_id": depoiq_id,
-            # "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {contradictions_response['data']['total_inserted']} contradictions and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoiq_id {depoiq_id}.",
-            "message": f"Stored {summmary_response['data']['total_inserted']} summaries and {transcript_response['data']['total_inserted']} transcript chunks and {admissions_response['data']['total_inserted']} admissions in Pinecone for depoiq_id {depoiq_id}.",
-            "summary": summmary_response["data"],
-            "transcript": transcript_response["data"],
-            # "contradictions": contradictions_response["data"],
-            "admissions": admissions_response["data"],
-        }
+        message_parts = []
+        for key, value in responses.items():
+            if "total_inserted" in value:
+                message_parts.append(f"{value['total_inserted']} {key}")
 
-        return jsonify(merged_response), 200
+        message = f"Stored {' and '.join(message_parts)} in Pinecone for depoiq_id {depoiq_id}."
+
+        return (
+            jsonify(
+                {
+                    "status": overall_status,
+                    "depoiq_id": depoiq_id,
+                    "message": message,
+                    **responses,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
         print(f"🔹 Error in add_depo: {e}")
@@ -1475,11 +1882,11 @@ def talk_summary():
         else:
             depoIQ_IDs_array_length = 24
 
-        top_k = depoIQ_IDs_array_length if is_unique else 10
+        top_k = depoIQ_IDs_array_length if is_unique else 8
 
         # ✅ Query Pinecone Safely
         query_pinecone_response = query_pinecone(
-            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique
+            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique, category='text'
         )
 
         print(
@@ -1513,6 +1920,158 @@ def talk_summary():
         return (
             jsonify(
                 {"error": "Something went wrong in talk_summary", "details": str(e)}
+            ),
+            500,
+        )
+
+
+@app.route("/depo/answer_validator", methods=["POST"])
+def answer_validator():
+    """
+    Answer Validate for Depo
+    ---
+    tags:
+      - Depo
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            questions:
+              type: array
+              items:
+                type: string
+            depoiq_id:
+              type: string
+            category:
+              type: string
+            is_download:
+                type: boolean
+                required: false
+    responses:
+      200:
+        description: Returns the success message
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request, JSON body required"}), 400
+
+        questions = data.get("questions")
+        depoiq_id = data.get("depoiq_id")
+        category = data.get("category")
+        is_download = data.get("is_download", False)
+
+        if not questions:
+            return jsonify({"error": "Missing questions"}), 400
+
+        if not depoiq_id:
+            return jsonify({"error": "Missing depoiq_id"}), 400
+
+        if not category:
+            return jsonify({"error": "Missing category"}), 400
+
+        allowed_categories = ["text", "keywords", "synonyms", "all"]
+        answers_response = []
+        if category not in allowed_categories:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid category. Should be 'text' , 'keywords' , 'synonyms', 'all'."
+                    }
+                ),
+                400,
+            )
+
+        for question in questions:
+            print(f"\n\n🔹 Question: {question}\n\n\n\n")
+            query_pinecone_response = query_pinecone(
+                question, [depoiq_id], top_k=8, is_unique=False, category=category
+            )
+
+            print(
+                f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"
+            )
+
+            if query_pinecone_response["status"] == "Not Found":
+                print(
+                    f"\n\n🔍 No matches found for the query and return error \n\n\n\n"
+                )
+                answers_response.append(
+                    {
+                        "question": question,
+                        "answer": "No matches found for the query",
+                        "score": 0,
+                    }
+                )
+                # skip the next steps in for loop
+                continue
+
+            else:
+                ai_resposne = get_answer_from_AI(query_pinecone_response)
+
+                score = get_answer_score_from_AI(
+                    question=question, answer=str(ai_resposne)
+                )
+
+                print(f"\n\n✅ AI Response: {ai_resposne} \n\n\n\n")
+
+                answers_response.append(
+                    {
+                        "question": question,
+                        "answer": str(ai_resposne),
+                        "score": int(score),
+                    }
+                )
+
+        if is_download:
+            # Create CSV in memory
+            si = io.StringIO()
+            writer = csv.writer(si)
+            writer.writerow(["Question", "Answer", "Score", "Category"])  # Header
+
+            for ans in answers_response:
+                writer.writerow(
+                    [ans["question"], ans["answer"], ans["score"], category]
+                )
+
+            output = si.getvalue()
+            si.close()
+
+            # Return response with CSV download
+            return Response(
+                output,
+                mimetype="text/csv",
+                headers={
+                    "Content-Disposition": f"attachment;filename=answers_validator_{category}_{depoiq_id}.csv"
+                },
+            )
+
+        else:
+            # Return JSON response
+
+            response = {
+                "depoiq_id": depoiq_id,
+                "category": category,
+                "answers": answers_response,
+                "overall_score": sum([answer["score"] for answer in answers_response])
+                / len(answers_response),
+            }
+
+            return (
+                jsonify(response),
+                200,
+            )
+
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "error": "Something went wrong in answer_validator",
+                    "details": str(e),
+                }
             ),
             500,
         )
