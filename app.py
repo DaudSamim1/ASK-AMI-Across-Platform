@@ -1850,8 +1850,14 @@ def talk_summary():
                 type: string
             user_query:
               type: string
+            category:
+              type: string
+              required: false
+              value: "all"
+              enum: ["text", "keywords", "synonyms", "all"]
             is_unique:
               type: boolean
+              required: false
     responses:
       200:
         description: Returns the success message
@@ -1864,6 +1870,18 @@ def talk_summary():
         depoiq_ids = data.get("depoiq_ids")
         user_query = data.get("user_query")
         is_unique = data.get("is_unique", False)
+        category = data.get("category", "text")
+
+        allowed_categories = ["text", "keywords", "synonyms", "all"]
+        if category not in allowed_categories:
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid category. Should be 'text' , 'keywords' , 'synonyms', 'all'."
+                    }
+                ),
+                400,
+            )
 
         if depoiq_ids:
             if not user_query:
@@ -1886,7 +1904,7 @@ def talk_summary():
 
         # ✅ Query Pinecone Safely
         query_pinecone_response = query_pinecone(
-            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique, category='text'
+            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique, category=category
         )
 
         print(
@@ -1913,6 +1931,7 @@ def talk_summary():
             query_pinecone_response["answer"] = str(
                 ai_resposne
             )  # Add AI response to the pinecone response
+            query_pinecone_response["category"] = category
 
         return jsonify(query_pinecone_response), 200
 
@@ -1947,9 +1966,13 @@ def answer_validator():
               type: string
             category:
               type: string
+              value: "all"
+              enum: ["text", "keywords", "synonyms", "all"]
             is_download:
                 type: boolean
-                required: false
+            top_k:
+                type: number
+                default: 8
     responses:
       200:
         description: Returns the success message
@@ -1961,17 +1984,15 @@ def answer_validator():
 
         questions = data.get("questions")
         depoiq_id = data.get("depoiq_id")
-        category = data.get("category")
+        category = data.get("category", "all")
         is_download = data.get("is_download", True)
+        top_k = data.get("top_k", 8)
 
         if not questions:
             return jsonify({"error": "Missing questions"}), 400
 
         if not depoiq_id:
             return jsonify({"error": "Missing depoiq_id"}), 400
-
-        if not category:
-            return jsonify({"error": "Missing category"}), 400
 
         allowed_categories = ["text", "keywords", "synonyms", "all"]
         answers_response = []
@@ -1988,7 +2009,7 @@ def answer_validator():
         for question in questions:
             print(f"\n\n🔹 Question: {question}\n\n\n\n")
             query_pinecone_response = query_pinecone(
-                question, [depoiq_id], top_k=8, is_unique=False, category=category
+                question, [depoiq_id], top_k=top_k, is_unique=False, category=category
             )
 
             print(
@@ -2026,16 +2047,47 @@ def answer_validator():
                     }
                 )
 
+        average_score = round(
+            sum([answer["score"] for answer in answers_response])
+            / len(answers_response),
+            2,
+        )
+
         if is_download:
             # Create CSV in memory
             si = io.StringIO()
             writer = csv.writer(si)
-            writer.writerow(["Question", "Answer", "Score", "Category"])  # Header
+            writer.writerow(
+                [
+                    "No",
+                    "Question",
+                    "Answer",
+                    "Score",
+                ]
+            )  # Header
 
             for ans in answers_response:
                 writer.writerow(
-                    [ans["question"], ans["answer"], ans["score"], category]
+                    [
+                        answers_response.index(ans) + 1,
+                        ans["question"],
+                        ans["answer"],
+                        ans["score"],
+                    ]
                 )
+            writer.writerow(["", "", "", "", ""])  # Empty row
+            writer.writerow(
+                ["", "Average Score", "Category", "Depoiq_id", "Searching AI"]
+            )  # Footer row
+            writer.writerow(
+                [
+                    "",
+                    average_score,
+                    category,
+                    depoiq_id,
+                    "gpt-3.5-turbo",
+                ]
+            )  # Footer row
 
             output = si.getvalue()
             si.close()
@@ -2056,8 +2108,7 @@ def answer_validator():
                 "depoiq_id": depoiq_id,
                 "category": category,
                 "answers": answers_response,
-                "overall_score": sum([answer["score"] for answer in answers_response])
-                / len(answers_response),
+                "overall_score": average_score,
             }
 
             return (
