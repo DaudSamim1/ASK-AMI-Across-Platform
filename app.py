@@ -207,7 +207,7 @@ def extract_keywords_and_synonyms(text):
         """
 
         response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             temperature=0.3,
@@ -622,7 +622,7 @@ def get_answer_from_AI(response):
 
         # Call GPT-3.5 API with deterministic parameters for consistent responses
         ai_response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system",
@@ -673,7 +673,7 @@ def get_answer_score_from_AI(question, answer):
 
         # Call GPT-3.5 API with deterministic parameters for consistent responses
         ai_response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "system",
@@ -2080,7 +2080,7 @@ def answer_validator():
                     average_score,
                     category,
                     depoiq_id,
-                    "gpt-3.5-turbo",
+                    "gpt-4o",
                 ]
             )  # Footer row
 
