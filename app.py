@@ -107,13 +107,17 @@ def generate_token(
 # Function to generate embeddings from OpenAI
 def generate_embedding(text):
     try:
-        text = text.replace("\n", " ").replace("\r", " ")
+        if not text or not isinstance(text, str) or text.strip() == "":
+            print("⚠️ Invalid or empty text for embedding generation. Text:", text)
+            return False
+
+        text = text.replace("\n", " ").replace("\r", " ").strip()
         response = openai_client.embeddings.create(
             input=[text], model="text-embedding-3-small"
         )
         return response.data[0].embedding
     except Exception as e:
-        print(f"Error generating embeddings: {e}")
+        print(f"Error generating embeddings for text: {text[:200]}... Error: {e}")
         return False
 
 
@@ -248,28 +252,56 @@ def extract_keywords_and_synonyms(text):
         return [], []
 
 
+def detect_category(user_query):
+    query_lower = user_query.lower()
+
+    # Mapping keywords to specific categories
+    category_keywords = {
+        "overview_summary": ["overview summary", "general overview", "case summary"],
+        "topical_summary": ["topical summary", "specific topic", "subject summary"],
+        "high_level_summary": [
+            "high-level summary",
+            "executive summary",
+            "brief summary",
+        ],
+        "detailed_summary": [
+            "detailed summary",
+            "in-depth summary",
+            "comprehensive analysis",
+        ],
+        "transcript": ["transcript", "conversation", "dialogue", "verbatim"],
+        "admissions": ["admission", "confession", "agreement", "acknowledgment"],
+        "contradictions": ["contradiction", "dispute", "conflict", "misstatement"],
+    }
+
+    # Check for matching keywords
+    for category, keywords in category_keywords.items():
+        if any(keyword in query_lower for keyword in keywords):
+            print(f"\n\n\nDetected category: {category}\n\n\n")
+            return category
+
+    print("No specific category detected. Using all categories.")
+    return "all"
+
+
 # Function to query Pinecone and match return top k results
-def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False, category=None):
+def query_pinecone(
+    query_text,
+    depo_ids=[],
+    top_k=5,
+    is_unique=False,
+    category=None,
+    is_detect_category=False,
+):
     try:
         print(
             f"\n🔍 Querying Pinecone for : query_text-> '{query_text}' (depo_id->: {depo_ids})\n\n\n"
         )
 
-        # keywords, synonyms = extract_keywords_and_synonyms(query_text)
-
-        # print(
-        #     f"\n\n\n\nExtracted Keywords: for {query_text} ->\n\n {keywords} -> {synonyms} \n\n\n\n\n"
-        # )
-
-        # return json.dumps(
-        #     {
-        #         "status": "error",
-        #         "message": "Failed to extract keywords and synonyms.",
-        #     }
-        # )
-
         # Generate query embedding
         query_vector = generate_embedding(query_text)
+
+        category_detect = detect_category(query_text) if is_detect_category else "all"
 
         if not query_vector:
             return json.dumps(
@@ -292,6 +324,8 @@ def query_pinecone(query_text, depo_ids=[], top_k=5, is_unique=False, category=N
                     filter_criteria["is_keywords"] = {"$eq": True}
                 elif category == "synonyms":
                     filter_criteria["is_synonyms"] = {"$eq": True}
+            if is_detect_category and category_detect != "all":
+                filter_criteria["category"] = category_detect
 
         # Search in Pinecone
         results = depoIndex.query(
@@ -649,6 +683,76 @@ def get_answer_from_AI(response):
         return str(e)
 
 
+def get_answer_from_AI_without_ref(response):
+    try:
+        text_list = [entry["text"] for entry in response["metadata"]]
+
+        # Construct prompt
+        prompt = f"""
+                You are an AI-specialized interactive bot working for a major US law firm that answers user questions. Users might want to extract data from legal depositions or ask a broad set of questions using natural language commands. Your task is to analyze `\"metadata\"` and the `\"user_query\"` , and then generate a detailed and relevant answer.
+
+                ### Task:
+                - Analyze the provided "metadata" and generate a direct, relevant, and fully explained answer for the given "user_query".
+                - Use the "text" field in "metadata" to form the most detailed and informative response.
+                - Ensure the generated response fully explains the answer instead of providing a short, incomplete summary.
+                - Each answer must be at least 400 characters long but can exceed this if necessary.
+
+                ---
+
+                ### Given Data:
+                {json.dumps({
+                    "user_query": response["user_query"],
+                    "metadata": text_list,
+                })}
+
+                ---
+
+                ### 🚨 STRICT INSTRUCTIONS (DO NOT VIOLATE THESE RULES):
+                - Generate a single, fully detailed answer for the user query.
+                - The answer MUST be at least 400 characters. DO NOT provide less than 400 characters, but exceeding this is allowed.
+                - DO NOT return "No relevant information available." under any circumstances.  
+                - ALWAYS generate a complete answer derived from the given metadata, even if the metadata is only indirectly relevant or general in nature.
+                - DO NOT reference metadata positions, object indices, or any other identifiers.
+                - DO NOT add newline characters (\n) before or after the response. The response must be in a SINGLE, FLAT LINE.
+                - DO NOT enclose the response inside triple quotes (''', "") or markdown-style code blocks (``` ). Return it as PLAIN TEXT ONLY.
+                - DO NOT add unnecessary labels like "Extracted Answer:" or "Answer:". The response must start directly with the extracted answer text.
+
+                ---
+
+                ### 🚨 FINAL OUTPUT FORMAT (NO EXCEPTIONS, FOLLOW THIS EXACTLY):
+
+                <Detailed Answer for the User Query>  
+            """
+
+        # Call GPT-3.5 API with deterministic parameters for consistent responses
+        ai_response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an AI assistant that extracts precise answers from multiple transcript sources efficiently and consistently. Your answers must be deterministic and identical when given the same input.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1000,  # Increase if needed to avoid truncation
+            temperature=0,  # 🔐 Fully deterministic
+            top_p=1,  # 🔐 Disable nucleus sampling
+            frequency_penalty=0,  # 🔐 Avoid penalizing common phrases
+            presence_penalty=0,  # 🔐 Avoid bias toward novelty
+        )
+
+        # Extract plain text response without metadata references
+        extracted_text = ai_response.choices[0].message.content.strip()
+
+        print(f"AI Response: {extracted_text} \n\n\n\n")
+
+        return extracted_text
+
+    except Exception as e:
+        print(f"Error querying Pinecone: {e}")
+        return str(e)
+
+
 def get_answer_score_from_AI(question, answer):
     try:
         # Construct prompt
@@ -697,6 +801,135 @@ def get_answer_score_from_AI(question, answer):
 
     except Exception as e:
         print(f"Error querying Pinecone: {e}")
+        return str(e)
+
+
+def generate_legal_prompt_from_AI(user_query, count=6):
+    try:
+        # - Contradictions (e.g., contradiction, dispute, conflict, misstatement)
+        prompt = f"""
+        Acting as a strategic lawyer, analyze the following legal scenario or query:
+
+        \"{user_query}\"
+
+        Generate {count} strategically relevant questions in bullet points. Each question should specifically target only the following categories and include relevant keywords:
+
+        - Admissions (e.g., admission, confession, agreement, acknowledgment)
+        - Summaries
+          - Overview Summary (e.g., overview summary, general overview, case summary)
+          - High-Level Summary (e.g., high-level summary, executive summary, brief summary)
+          - Topical Summary (e.g., topical summary, specific topic, subject summary)
+          - Detailed Summary (e.g., detailed summary, in-depth summary, comprehensive analysis)
+        - Transcripts (e.g., transcript, conversation, dialogue, verbatim)
+
+        Present the questions clearly and concisely, formatted strictly as bullet points.
+        """
+
+        # Call GPT-4o API with specific parameters for consistency
+        ai_response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a highly experienced strategic lawyer specializing in legal analysis and question generation. Provide concise and relevant questions only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=500,
+            temperature=0,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0,
+        )
+
+        # Extract and return the AI-generated response as an array of strings
+        extracted_text = ai_response.choices[0].message.content.strip()
+        question_list = [
+            q.strip("- ").strip() for q in extracted_text.split("\n") if q.strip()
+        ]
+        print(f"AI Response: {question_list} \n\n")
+        return question_list
+
+    except Exception as e:
+        print(f"Error generating legal questions: {e}")
+        return str(e)
+
+
+import json
+import openai
+
+
+def generate_detailed_answer(user_query, answers):
+    try:
+        # Extract necessary data
+        text_list = [
+            {
+                "index": idx,
+                "text": meta["text"],
+                "question": answer["question"],
+                "answer": answer["answer"],
+                "category": meta["category"],
+            }
+            for idx, answer in enumerate(answers)
+            for meta in answer["metadata"]
+        ]
+
+        # Construct a detailed prompt for AI analysis
+        prompt = f"""
+        You are an AI specialized in legal analysis, acting as a legal assistant providing a comprehensive case analysis for a major US law firm. Your role is to generate a detailed and well-supported legal response based on user queries. The user has asked the following query:
+
+        '{user_query}'
+
+        You are provided with relevant information, including summarized answers, extracted admissions, high-level summaries, detailed summaries, topical summaries, and relevant transcripts. Your task is to analyze all the data and provide an extensive and fully detailed answer.
+
+        ### Instructions:
+        - Provide a clear, structured, and highly detailed answer that directly addresses the user's query.
+        - Expand on key concepts, legal theories, and liability principles using all relevant information from the available data.
+        - Provide accurate legal analysis without inserting opinions or making assumptions.
+        - Ensure a professional and neutral tone, maintaining legal accuracy.
+        - Reference relevant excerpts and evidence from the provided metadata using a clear reference format `&&metadataRef = [X]`, where X represents the metadata array index. 
+        - Multiple references must be separated by commas, for example: `&&metadataRef = [0, 3, 7]`.
+        - Avoid unnecessary repetition and maintain clarity by logically connecting facts, admissions, and legal context.
+
+        ### Special Rules for Metadata Referencing:
+        - If multiple metadata objects are relevant to the user query, generate a clear and separate detailed answer for each one.
+        - Provide the most applicable metadata references by indicating the correct metadata index position(s).
+        - NEVER use any other reference format such as `(metadata index X)` or `chunk_index`. The only valid format is `&&metadataRef = [X]`.
+
+        ### Available Data:
+        {json.dumps(text_list, indent=2)}
+
+        ---
+        
+        Provide a complete, clear, and highly detailed response below, following all instructions:
+        """
+
+        # Generate AI response using GPT-4
+        ai_response = openai.Client().chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a legal AI assistant specialized in providing detailed and well-supported legal analysis. Ensure responses are thorough, clear, and logically structured based on the provided data. Provide factual legal analysis without personal opinions or special character formatting.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=4000,
+            temperature=0,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0,
+        )
+
+        # Extract the detailed response
+        extracted_text = ai_response.choices[0].message.content.strip()
+
+        print(f"AI Response: {extracted_text}\n\n\n")
+
+        return extracted_text
+
+    except Exception as e:
+        print(f"Error generating detailed answer: {e}")
         return str(e)
 
 
@@ -890,10 +1123,18 @@ def getDepoAdmissions(depoiq_id):
 # Function to convert camelCase to snake_case
 def extract_text(value):
     """Extracts plain text from HTML or returns simple text."""
+    if not value:
+        print("⚠️ extract_text received empty input.")
+        return ""
+
     if value.startswith("<"):
-        soup = BeautifulSoup(value, "html.parser")
-        return soup.get_text()
-    return str(value)
+        try:
+            soup = BeautifulSoup(value, "html.parser")
+            return soup.get_text().strip()
+        except Exception as e:
+            print(f"⚠️ Error parsing HTML: {e}")
+            return ""
+    return str(value).strip()
 
 
 # Function to split text into paragraphs
@@ -958,104 +1199,108 @@ def check_existing_entry(depoiq_id, category, chunk_index):
 # Function to store summaries in Pinecone with embeddings
 def store_summaries_in_pinecone(depoiq_id, category, text_chunks):
     """Stores text chunks in Pinecone with embeddings."""
-    vectors_to_upsert = []
-    skipped_chunks = []
+    try:
+        vectors_to_upsert = []
+        skipped_chunks = []
 
-    for chunk_index, chunk_value in enumerate(text_chunks):
+        for chunk_index, chunk_value in enumerate(text_chunks):
 
-        print(f"\n\n\n\n🔹 Processing chunk {chunk_index + 1} of {category}\n\n\n\n")
+            print(f"\n\n\n\n🔹 Processing chunk {chunk_index + 1} of {category}\n\n\n\n")
 
-        if not chunk_value or not isinstance(chunk_value, str):
-            print(f"⚠️ Skipping invalid text chunk: {chunk_index}\n\n\n\n")
-            continue
+            if not chunk_value or not isinstance(chunk_value, str):
+                print(f"⚠️ Skipping invalid text chunk: {chunk_index}\n\n\n\n")
+                continue
 
-        # Check if summary already exists
-        if check_existing_entry(depoiq_id, category, chunk_index):
-            skipped_chunks.append(chunk_index)
-            print(f"⚠️ Summary already exists: {chunk_index}, skipping...\n\n\n\n")
-            continue
+            # Check if summary already exists
+            if check_existing_entry(depoiq_id, category, chunk_index):
+                skipped_chunks.append(chunk_index)
+                print(f"⚠️ Summary already exists: {chunk_index}, skipping...\n\n\n\n")
+                continue
 
-        # Extract keywords and synonyms
-        keywords, synonyms_keywords = extract_keywords_and_synonyms(chunk_value)
+            # Extract keywords and synonyms
+            keywords, synonyms_keywords = extract_keywords_and_synonyms(chunk_value)
 
-        print(
-            f"\n\n\n\nExtracted Keywords: for {chunk_value} ->\n\n {keywords} \n\n\n\n\n"
-        )
+            print(
+                f"\n\n\n\nExtracted Keywords: for {chunk_value} ->\n\n {keywords} \n\n\n\n\n"
+            )
 
-        # Generate embedding
-        embedding_text = generate_embedding(chunk_value)
-        embedding_keywords = generate_embedding(keywords)
-        embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
+            # Generate embedding
+            embedding_text = generate_embedding(chunk_value)
+            embedding_keywords = generate_embedding(keywords)
+            embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
 
-        # Generate embeddings in batch
-        # embeddings = generate_batch_embeddings(
-        #     [chunk_value, " ".join(keywords), " ".join(synonyms_keywords)]
-        # )
-        # embedding_text, embedding_keywords, embedding_synonyms_keywords = embeddings
+            # Generate embeddings in batch
+            # embeddings = generate_batch_embeddings(
+            #     [chunk_value, " ".join(keywords), " ".join(synonyms_keywords)]
+            # )
+            # embedding_text, embedding_keywords, embedding_synonyms_keywords = embeddings
 
-        # if not any(embedding):  # Check for all zero vectors
-        #     print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}\n\n\n\n")
-        #     continue
+            # if not any(embedding):  # Check for all zero vectors
+            #     print(f"⚠️ Skipping zero-vector embedding for: {chunk_index}\n\n\n\n")
+            #     continue
 
-        # Metadata
-        # metadata = {
-        #     "depoiq_id": depoiq_id,
-        #     "category": category,
-        #     "chunk_index": chunk_index,
-        #     "created_at": datetime.now().isoformat(),
-        # }
+            # Metadata
+            # metadata = {
+            #     "depoiq_id": depoiq_id,
+            #     "category": category,
+            #     "chunk_index": chunk_index,
+            #     "created_at": datetime.now().isoformat(),
+            # }
 
-        created_at = datetime.now().isoformat()
+            created_at = datetime.now().isoformat()
 
-        # Add to batch
-        vectors_to_upsert.extend(
-            [
-                {
-                    "id": str(uuid.uuid4()),
-                    "values": embedding_text,
-                    "metadata": {
-                        "depoiq_id": depoiq_id,
-                        "category": category,
-                        "chunk_index": chunk_index,
-                        "created_at": created_at,
+            # Add to batch
+            vectors_to_upsert.extend(
+                [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "values": embedding_text,
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                        },
                     },
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "values": embedding_keywords,
-                    "metadata": {
-                        "depoiq_id": depoiq_id,
-                        "category": category,
-                        "chunk_index": chunk_index,
-                        "created_at": created_at,
-                        "is_keywords": True,
-                        "keywords": keywords,
+                    {
+                        "id": str(uuid.uuid4()),
+                        "values": embedding_keywords,
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_keywords": True,
+                            "keywords": keywords,
+                        },
                     },
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "values": embedding_synonyms_keywords,
-                    "metadata": {
-                        "depoiq_id": depoiq_id,
-                        "category": category,
-                        "chunk_index": chunk_index,
-                        "created_at": created_at,
-                        "is_synonyms": True,
-                        "synonyms_keywords": synonyms_keywords,
+                    {
+                        "id": str(uuid.uuid4()),
+                        "values": embedding_synonyms_keywords,
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_synonyms": True,
+                            "synonyms_keywords": synonyms_keywords,
+                        },
                     },
-                },
-            ]
-        )
+                ]
+            )
 
-    # Bulk upsert to Pinecone
-    if vectors_to_upsert:
+        # Bulk upsert to Pinecone
+        if vectors_to_upsert:
 
-        depoIndex.upsert(vectors=vectors_to_upsert)
-        print(
-            f"✅ Successfully inserted {len(vectors_to_upsert)} summaries in Pinecone."
-        )
+            depoIndex.upsert(vectors=vectors_to_upsert)
+            print(
+                f"✅ Successfully inserted {len(vectors_to_upsert)} summaries in Pinecone."
+            )
 
-    return len(vectors_to_upsert), skipped_chunks
+        return len(vectors_to_upsert), skipped_chunks
+    except Exception as e:
+        print(f"Error storing summaries in Pinecone: {e}")
+        return 0, []
 
 
 def store_transcript_lines_in_pinecone(depoiq_id, category, transcript_data):
@@ -1448,6 +1693,8 @@ def add_depo_summaries(depo_summary, depoiq_id):
 
             total_inserted += inserted_count
             skipped_sub_categories[category] = skipped_chunks
+
+            print(f"✅ Successfully inserted {inserted_count} summaries for {category}")
 
         if total_inserted > 0:
             status = "success"
@@ -1904,7 +2151,12 @@ def talk_summary():
 
         # ✅ Query Pinecone Safely
         query_pinecone_response = query_pinecone(
-            user_query, depoiq_ids, top_k=top_k, is_unique=is_unique, category=category
+            user_query,
+            depoiq_ids,
+            top_k=top_k,
+            is_unique=is_unique,
+            category=category,
+            is_detect_category=False,
         )
 
         print(
@@ -1925,8 +2177,6 @@ def talk_summary():
             )
         else:
             ai_resposne = get_answer_from_AI(query_pinecone_response)
-
-            print(f"\n\n✅ AI Response: {ai_resposne} \n\n\n\n")
 
             query_pinecone_response["answer"] = str(
                 ai_resposne
@@ -2004,7 +2254,12 @@ def answer_validator():
         for question in questions:
             print(f"\n\n🔹 Question: {question}\n\n\n\n")
             query_pinecone_response = query_pinecone(
-                question, [depoiq_id], top_k=top_k, is_unique=False, category=category
+                question,
+                [depoiq_id],
+                top_k=top_k,
+                is_unique=False,
+                category=category,
+                is_detect_category=False,
             )
 
             print(
@@ -2031,8 +2286,6 @@ def answer_validator():
                 score = get_answer_score_from_AI(
                     question=question, answer=str(ai_resposne)
                 )
-
-                print(f"\n\n✅ AI Response: {ai_resposne} \n\n\n\n")
 
                 answers_response.append(
                     {
@@ -2110,6 +2363,113 @@ def answer_validator():
                 jsonify(response),
                 200,
             )
+
+    except Exception as e:
+        return (
+            jsonify(
+                {
+                    "error": "Something went wrong in answer_validator",
+                    "details": str(e),
+                }
+            ),
+            500,
+        )
+
+
+@app.route("/depo/ask-ami-agent", methods=["POST"])
+def ask_ami_agent():
+    """
+    Talk to depo summaries & transcript by depoiq_ids
+    ---
+    tags:
+      - Depo
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            depoiq_ids:
+              type: array
+              items:
+                type: string
+            user_query:
+              type: string
+
+    responses:
+      200:
+        description: Returns the success message
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request, JSON body required"}), 400
+
+        user_query = data.get("user_query")
+        depoiq_ids = data.get("depoiq_ids")
+
+        questions = generate_legal_prompt_from_AI(user_query, count=6)
+        print(f"\n\n🔹 Question List: {questions}\n\n\n\n")
+
+        if not depoiq_ids:
+            return jsonify({"error": "Missing depoiq_id"}), 400
+
+        answers_response = []
+
+        for question in questions:
+            print(f"\n\n🔹 Question: {question}\n\n\n\n")
+            query_pinecone_response = query_pinecone(
+                question,
+                depoiq_ids,
+                top_k=8,
+                is_unique=False,
+                category="text",
+                is_detect_category=True,
+            )
+
+            print(
+                f"\n\n✅ Query Pinecone Response: {json.dumps(query_pinecone_response, indent=2)}\n\n\n\n"
+            )
+
+            if query_pinecone_response["status"] == "Not Found":
+                print(
+                    f"\n\n🔍 No matches found for the query and return error \n\n\n\n"
+                )
+                answers_response.append(
+                    {
+                        "question": question,
+                        "answer": "No matches found for the query",
+                    }
+                )
+                continue
+
+            else:
+                ai_resposne = get_answer_from_AI_without_ref(query_pinecone_response)
+
+                answers_response.append(
+                    {
+                        "question": question,
+                        "answer": str(ai_resposne),
+                        "metadata": query_pinecone_response.get("metadata"),
+                        "depoiq_id": query_pinecone_response.get("depoiq_id"),
+                    }
+                )
+        detailed_answer = generate_detailed_answer(
+            user_query=user_query, answers=answers_response
+        )
+
+        response = {
+            "detailed_answer": detailed_answer,
+            "user_query": user_query,
+            "depoiq_ids": depoiq_ids,
+            "answers": answers_response,
+        }
+
+        return (
+            jsonify(response),
+            200,
+        )
 
     except Exception as e:
         return (
