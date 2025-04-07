@@ -447,27 +447,49 @@ def query_pinecone(
                     }
                 )
 
-            # if isContradictions:
-            #     chunk_index = match["chunk_index"]
-            #     contradictions = depo_data.get("contradictions", {})
-            #     contradictions = contradictions[int(chunk_index)]
-            #     reason = contradictions.get("reason")
-            #     initial_question = contradictions.get("initial_question")
-            #     initial_answer = contradictions.get("initial_answer")
-            #     contradictory_responses = contradictions.get("contradictory_responses")
-            #     contradictory_responses_string = ""
-            #     for contradictory_response in contradictory_responses:
-            #         contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
+            if isContradictions:
+                chunk_index = match["chunk_index"]
+                contradictions = depo_data.get("contradictions", {})
+                is_keywords = match["is_keywords"]
+                is_synonyms = match["is_synonyms"]
+                keywords = match["keywords"]
+                synonyms_keywords = match["synonyms_keywords"]
 
-            #     text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
-            #     custom_response.append(
-            #         {
-            #             "depoiq_id": depoiq_id,
-            #             "category": category,
-            #             "chunk_index": chunk_index,
-            #             "text": text,
-            #         }
-            #     )
+                # Extract the specific contradiction based on chunk_index
+                contradiction = next(
+                    (
+                        item
+                        for item in contradictions
+                        if item["contradiction_id"] == chunk_index
+                    ),
+                    None,
+                )
+
+                if contradiction == None:
+                    print(
+                        f"Contradiction with ID {chunk_index} not found in depo_id {depoiq_id}"
+                    )
+                    continue
+
+                reason = contradiction.get("reason")
+                initial_question = contradiction.get("initial_question")
+                initial_answer = contradiction.get("initial_answer")
+                contradictory_responses = contradiction.get("contradictory_responses")
+                contradictory_responses_string = ""
+                for contradictory_response in contradictory_responses:
+                    contradictory_responses_string += f"{contradictory_response['contradictory_question']} {contradictory_response['contradictory_answer']} "
+
+                text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
+
+                print(f"\n\n\n\n\nText: {text} \n\n\n\n\n")
+                custom_response.append(
+                    {
+                        "depoiq_id": depoiq_id,
+                        "category": category,
+                        "chunk_index": chunk_index,
+                        "text": text,
+                    }
+                )
 
             if isAdmission:
                 chunk_index = match["chunk_index"]
@@ -569,7 +591,7 @@ def query_pinecone(
         return response
 
     except Exception as e:
-        print(f"Error querying Pinecone: {e}")
+        print(f"Error querying Pinecone in query_pinecone: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -679,7 +701,7 @@ def get_answer_from_AI(response):
         return extracted_text
 
     except Exception as e:
-        print(f"Error querying Pinecone: {e}")
+        print(f"Error querying Pinecone in get_answer_from_AI: {e}")
         return str(e)
 
 
@@ -749,7 +771,7 @@ def get_answer_from_AI_without_ref(response):
         return extracted_text
 
     except Exception as e:
-        print(f"Error querying Pinecone: {e}")
+        print(f"Error querying Pinecone in get_answer_from_AI_without_ref: {e}")
         return str(e)
 
 
@@ -800,7 +822,7 @@ def get_answer_score_from_AI(question, answer):
         return extracted_text
 
     except Exception as e:
-        print(f"Error querying Pinecone: {e}")
+        print(f"Error querying Pinecone get_answer_score_from_AI: {e}")
         return str(e)
 
 
@@ -892,16 +914,22 @@ def generate_detailed_answer(user_query, answers):
         - Avoid unnecessary repetition and maintain clarity by logically connecting facts, admissions, and legal context.
 
         ### Special Rules for Metadata Referencing:
-        - If multiple metadata objects are relevant to the user query, generate a clear and separate detailed answer for each one.
         - Provide the most applicable metadata references by indicating the correct metadata index position(s).
         - NEVER use any other reference format such as `(metadata index X)` or `chunk_index`. The only valid format is `&&metadataRef = [X]`.
+
+        ### Srict Formatting Rules:
+        - Do not write answer in points or bullet points.
+        - Do not add ** or any other special characters at the beginning or end of the answer.
+        - Do not use any special formatting like bold, italics, or code blocks.
+
+
 
         ### Available Data:
         {json.dumps(text_list, indent=2)}
 
         ---
         
-        Provide a complete, clear, and highly detailed response below, following all instructions:
+        Provide a complete, clear, and highly detailed response below, following all instructions without (**) or any other special characters:
         """
 
         # Generate AI response using GPT-4
@@ -984,6 +1012,7 @@ def getDepo(
                 }
                 contradictions @include(if: $includeContradictions) {
                     reason
+                    contradiction_id
                     initial_response_starting_page
                     initial_response_starting_line
                     initial_response_ending_page
@@ -1040,6 +1069,8 @@ def getDepo(
         }
 
         response = requests.post(GRAPHQL_URL, json=payload, headers=headers)
+
+        print("Response Status Code:", response.status_code)
 
         if response.status_code == 200:
             return response.json()["data"]["getDepo"]
@@ -1192,7 +1223,7 @@ def check_existing_entry(depoiq_id, category, chunk_index):
         )
         return bool(existing_entries["matches"])
     except Exception as e:
-        print(f"⚠️ Error querying Pinecone: {e}")
+        print(f"⚠️ Error querying Pinecone in check_exisiting_entry: {e}")
         return False
 
 
@@ -1205,7 +1236,9 @@ def store_summaries_in_pinecone(depoiq_id, category, text_chunks):
 
         for chunk_index, chunk_value in enumerate(text_chunks):
 
-            print(f"\n\n\n\n🔹 Processing chunk {chunk_index + 1} of {category}\n\n\n\n")
+            print(
+                f"\n\n\n\n🔹 Processing chunk {chunk_index + 1} of {category}\n\n\n\n"
+            )
 
             if not chunk_value or not isinstance(chunk_value, str):
                 print(f"⚠️ Skipping invalid text chunk: {chunk_index}\n\n\n\n")
@@ -1451,10 +1484,18 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
             f"🔹 Storing contradictions for depoiq_id: {depoiq_id} {len(contradictions_data)}"
         )
 
-        for chunk_index in range(0, len(contradictions_data)):
-            contradictions = contradictions_data[chunk_index]
+        for index in range(0, len(contradictions_data)):
+            contradictions = contradictions_data[index]
+            chunk_index = contradictions.get("contradiction_id", None)
 
             print(f"\n\n 🔹 Storing contradictions: {chunk_index} \n\n\n\n")
+
+            if chunk_index == None:
+                print(
+                    f"⚠️ Skipping contradictions: because contradiction_id is None \n\n\n\n"
+                )
+                skipped_chunks.append(chunk_index)
+                continue
 
             # check if already exists in pinecone
             if check_existing_entry(
@@ -1479,36 +1520,66 @@ def store_contradictions_in_pinecone(depoiq_id, category, contradictions_data):
 
             contradiction_text = f"{initial_question} {initial_answer} {contradictory_responses_string} {reason}"
 
-            # keywords = extract_keywords_from_text(contradiction_text)
+            # Extract keywords and synonyms
+            keywords, synonyms_keywords = extract_keywords_and_synonyms(
+                contradiction_text
+            )
 
-            # print(
-            #     f"\n\n\n\nExtracted Keywords: for {contradiction_text} ->\n\n {keywords} \n\n\n\n\n"
-            # )
+            print(
+                f"\n\n\n\nExtracted Keywords: for {contradiction_text} ->\n\n {keywords} \n\n\n\n\n"
+            )
 
             # Generate embedding
-            embedding = generate_embedding(contradiction_text)
+            embedding_text = generate_embedding(contradiction_text)
+            embedding_keywords = generate_embedding(keywords)
+            embedding_synonyms_keywords = generate_embedding(synonyms_keywords)
 
-            if not any(embedding):
+            if not any(embedding_text):
                 print(
                     f"⚠️ Skipping empty embedding for contradictions: {contradiction_text}"
                 )
                 continue
 
-            # Add the actual transcript text in metadata for retrieval
-            metadata = {
-                "depoiq_id": depoiq_id,
-                "category": category,
-                "chunk_index": chunk_index,
-                "created_at": datetime.now().isoformat(),
-            }
+            created_at = datetime.now().isoformat()
 
             # Add to batch
-            vectors_to_upsert.append(
-                {
-                    "id": str(uuid.uuid4()),  # Unique ID
-                    "values": embedding,  # Embedding vector
-                    "metadata": metadata,  # Metadata including the text
-                }
+            vectors_to_upsert.extend(
+                [
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_text,  # Embedding vector for text
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                        },
+                    },
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_keywords,  # Embedding vector for keywords
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_keywords": True,
+                            "keywords": keywords,
+                        },
+                    },
+                    {
+                        "id": str(uuid.uuid4()),  # Unique ID
+                        "values": embedding_synonyms_keywords,  # Embedding vector for synonyms
+                        "metadata": {
+                            "depoiq_id": depoiq_id,
+                            "category": category,
+                            "chunk_index": chunk_index,
+                            "created_at": created_at,
+                            "is_synonyms": True,
+                            "synonyms_keywords": synonyms_keywords,
+                        },
+                    },
+                ]
             )
 
             if len(vectors_to_upsert) >= max_chunk_upsert:
@@ -1792,16 +1863,16 @@ def add_depo_contradictions(contradictions_data, depoiq_id):
 
         category = "contradictions"
 
-        return {
-            "status": "warning",
-            "message": "Waiting for backend change",
-            "data": {
-                "depoiq_id": depoiq_id,
-                "total_inserted": 0,
-                "skipped_details": [],
-                "skipped_count": 0,
-            },
-        }
+        # return {
+        #     "status": "warning",
+        #     "message": "Waiting for backend change",
+        #     "data": {
+        #         "depoiq_id": depoiq_id,
+        #         "total_inserted": 0,
+        #         "skipped_details": [],
+        #         "skipped_count": 0,
+        #     },
+        # }
 
         # Store contradictions data
         inserted_contradictions, skipped_contradictions = (
@@ -1948,6 +2019,7 @@ def get_depo_by_Id(depoiq_id):
             isContradictions=not category or category == "contradictions",
             isAdmission=not category or category == "admissions",
         )
+        print(f"🔹 Depo data: {depo}")
         return jsonify(depo), 200
 
     except Exception as e:
