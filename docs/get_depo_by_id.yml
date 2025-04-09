@@ -1,0 +1,21 @@
+tags:
+  - Depo
+operationId: getDepoById
+summary: Get Depo by ID
+description: Get Depo by ID using the Depo API
+parameters:
+  - name: depoiq_id
+    in: path
+    type: string
+    required: true
+    description: The ID of the depo
+  - name: category
+    in: query
+    type: string
+    required: false
+    description: Optional category filter (e.g., summary, transcript, contradictions, admissions)
+responses:
+  200:
+    description: Returns the success message
+  500:
+    description: Internal server error

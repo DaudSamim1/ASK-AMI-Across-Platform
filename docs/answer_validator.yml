@@ -1,0 +1,25 @@
+tags:
+  - Depo
+operationId: validateAnswer
+summary: Validate the answer to a question
+description: Validate the answer to a question using the Depo API
+parameters:
+  - name: body
+    in: body
+    required: true
+    schema:
+      type: object
+      properties:
+        questions:
+          type: array
+          items:
+            type: string
+        depoiq_id:
+          type: string
+        category:
+          type: string
+          enum: ["text", "keywords", "synonyms", "all"]
+          description: Optional category filter (e.g., text, keywords, synonyms, all)
+responses:
+  200:
+    description: Returns the success message

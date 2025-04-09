@@ -1,0 +1,27 @@
+tags:
+  - Depo
+operationId: depoTalk
+summary: Talk to Depo
+description: Talk to Depo using the Depo API
+parameters:
+  - name: body
+    in: body
+    required: true
+    schema:
+      type: object
+      properties:
+        depoiq_ids:
+          type: array
+          items:
+            type: string
+        user_query:
+          type: string
+        category:
+          type: string
+          enum: ["text", "keywords", "synonyms", "all"]
+          description: Optional category filter (e.g., text, keywords, synonyms, all)
+        is_unique:
+          type: boolean
+responses:
+  200:
+    description: Returns the success message

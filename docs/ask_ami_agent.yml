@@ -1,0 +1,21 @@
+tags:
+  - Depo
+operationId: askAmiAgent
+summary: Ask Ami Agent
+description: Ask Ami Agent using the Depo API
+parameters:
+  - name: body
+    in: body
+    required: true
+    schema:
+      type: object
+      properties:
+        depoiq_ids:
+          type: array
+          items:
+            type: string
+        user_query:
+          type: string
+responses:
+  200:
+    description: Returns the success message
