@@ -50,7 +50,7 @@ class DepoAPI:
                 in: query
                 type: string
                 required: false
-                description: Optional category filter
+                description: Optional category filter (e.g., summary, transcript, contradictions, admissions)
             responses:
               200:
                 description: Returns the success message
@@ -84,6 +84,11 @@ class DepoAPI:
                 type: string
                 required: true
                 description: The ID of the depo
+              - name: category
+                in: query
+                type: string
+                required: false
+                description: Optional category filter (e.g., summary, transcript, contradictions, admissions)
             responses:
               200:
                 description: Returns the success message
@@ -128,6 +133,7 @@ class DepoAPI:
                     category:
                       type: string
                       enum: ["text", "keywords", "synonyms", "all"]
+                      description: Optional category filter (e.g., text, keywords, synonyms, all)
                     is_unique:
                       type: boolean
             responses:
@@ -170,6 +176,7 @@ class DepoAPI:
                     category:
                       type: string
                       enum: ["text", "keywords", "synonyms", "all"]
+                      description: Optional category filter (e.g., text, keywords, synonyms, all)
             responses:
               200:
                 description: Returns the success message
