@@ -751,9 +751,9 @@ class PineConeModel:
 
             cPrint(matched_results, "Matched Results", "cyan")
 
-            from models.depo_model import Depo
+            from models.depo_model import DepoModel
 
-            depo_instance = Depo()
+            depo_instance = DepoModel()
 
             # Group results by depoiq_id
             grouped_result = depo_instance.group_by_depoIQ_ID(
