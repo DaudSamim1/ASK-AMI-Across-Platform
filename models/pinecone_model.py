@@ -1,8 +1,8 @@
 from pinecone import Pinecone, ServerlessSpec
 from datetime import datetime
-from helperFunctions.openAi import OpenAIClient
-from helperFunctions.general_helpers import cPrint
-from helperFunctions.general_helpers import (
+from models.openAi_model import OpenAIClientModel
+from helperFunctions.utils import cPrint
+from helperFunctions.utils import (
     cPrint,
     detect_category,
     snake_to_camel,
@@ -16,7 +16,7 @@ import uuid
 import json
 
 
-class PineConeClass:
+class PineConeModel:
     index_name = os.getenv("DEPO_INDEX_NAME", "")
 
     def __init__(self, indexN=index_name):
@@ -26,7 +26,7 @@ class PineConeClass:
             raise ValueError(
                 "Pinecone API key or OpenAI API key is missing. Please set them in the environment variables."
             )
-        self.ai_client = OpenAIClient()
+        self.ai_client = OpenAIClientModel()
 
         self.index_name = indexN
         self.pc = Pinecone(api_key=pinecone_api_key)
@@ -751,7 +751,7 @@ class PineConeClass:
 
             cPrint(matched_results, "Matched Results", "cyan")
 
-            from helperFunctions.depo import Depo
+            from models.depo_model import Depo
 
             depo_instance = Depo()
 

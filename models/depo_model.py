@@ -1,16 +1,16 @@
-from helperFunctions.general_helpers import (
+from helperFunctions.utils import (
     generate_token,
     camel_to_snake,
     extract_text,
     split_into_chunks,
 )
-from helperFunctions.pinecone_class import PineConeClass
-from helperFunctions.general_helpers import cPrint
+from models.pinecone_model import PineConeModel
+from helperFunctions.utils import cPrint
 import requests
 import os
 
 
-class Depo:
+class DepoModel:
 
     def __init__(self):
         self.GRAPHQL_URL = os.getenv("GRAPHQL_URL", "")
@@ -18,7 +18,7 @@ class Depo:
             raise ValueError(
                 "GRAPHQL_URL is not set. Please set it in the environment variables."
             )
-        self.pc_instance = PineConeClass()
+        self.pc_instance = PineConeModel()
         self.token = generate_token()
 
     # Function to get Depo from DepoIQ_ID

@@ -1,7 +1,7 @@
 from flask import jsonify, Response, request
-from helperFunctions.general_helpers import cPrint
-from helperFunctions.pinecone_class import PineConeClass
-from helperFunctions.depo import Depo
+from helperFunctions.utils import cPrint
+from models.pinecone_model import PineConeModel
+from models.depo_model import DepoModel
 from bson import ObjectId
 import csv
 import io
@@ -10,8 +10,8 @@ import io
 class DepoController:
 
     def __init__(self):
-        self.depo_model = Depo()
-        self.pc = PineConeClass()
+        self.depo_model = DepoModel()
+        self.pc = PineConeModel()
         self.ai_client = self.pc.ai_client
         self.alowed_depo_categories = [
             "summary",

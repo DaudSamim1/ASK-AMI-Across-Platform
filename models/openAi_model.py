@@ -1,6 +1,6 @@
 import os
 from openai import OpenAI
-from helperFunctions.general_helpers import cPrint
+from helperFunctions.utils import cPrint
 from prompts import (
     extract_keywords_and_synonyms,
     get_answer_from_AI,
@@ -11,7 +11,7 @@ from prompts import (
 )
 
 
-class OpenAIClient:
+class OpenAIClientModel:
 
     def __init__(self):
         openai_api_key = os.getenv("OPENAI_API_KEY", "")

@@ -1,8 +1,8 @@
+from bs4 import BeautifulSoup
 import json
 import jwt
 import os
 import re
-from bs4 import BeautifulSoup
 
 
 ansi_colors = {

@@ -3,8 +3,8 @@ from flasgger import Swagger, swag_from
 from dotenv import load_dotenv
 
 from controllers.depo_controller import DepoController
-from helperFunctions.general_helpers import cPrint
-from swagger_config import template
+from helperFunctions.utils import cPrint
+from docs.swagger_config import template
 
 load_dotenv()
 
