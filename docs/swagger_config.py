@@ -5,9 +5,9 @@ template = {
         "description": "REST API for interacting with deposition data including summaries, transcripts, contradictions, and admissions.",
         "version": "1.0.1",
     },
-    "host": "localhost:5000",
+    # "host": "localhost:5000",
     "basePath": "/",
-    "schemes": ["http", "https"],
+    # "schemes": ["http", "https"],
     "consumes": ["application/json"],
     "produces": ["application/json"],
     # "securityDefinitions": {
