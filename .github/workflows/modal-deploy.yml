@@ -1,0 +1,41 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.7"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install modal  # Ensure modal is installed even if not in requirements.txt
+
+      - name: Authenticate with Modal
+        run: modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET
+
+      - name: Deploy to Modal
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            modal deploy --env ask-ami main_modal.py
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            modal deploy --env ask-ami-dev main_modal.py
+          fi
