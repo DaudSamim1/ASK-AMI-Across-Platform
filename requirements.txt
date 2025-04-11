@@ -1,5 +1,6 @@
-flask
-flasgger
+fastapi
+uvicorn
+python-multipart
 requests
 PyJWT==2.6.0
 pinecone
@@ -8,5 +9,3 @@ numpy
 python-dotenv
 beautifulsoup4
 pymongo
-asgiref
-werkzeug

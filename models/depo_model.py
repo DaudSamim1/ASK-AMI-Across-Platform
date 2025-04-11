@@ -122,8 +122,6 @@ class DepoModel:
                 },
             }
 
-            # token = generate_token()
-
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": self.token,
@@ -138,6 +136,7 @@ class DepoModel:
             )
 
             if response.status_code == 200:
+                cPrint(response.json(),"Response")
                 return response.json()["data"]["getDepo"]
             elif response.status_code == 401:
                 raise Exception("Unauthorized - Invalid Token")

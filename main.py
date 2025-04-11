@@ -1,81 +1,145 @@
-from flask import Flask, jsonify
-from flasgger import Swagger, swag_from
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from dotenv import load_dotenv
-
+from typing import Optional
 from controllers.depo_controller import DepoController
 from helperFunctions.utils import cPrint
-from docs.swagger_config import template
+from docs.types import (
+    SummaryCategoriesType,
+    TalkDepoRequest,
+    AnswerValidatorRequest,
+    AskAmiAgentRequest,
+)
 
 load_dotenv()
 
 
 class DepoAPI:
     def __init__(self):
-        self.app = Flask(__name__)
-        self.swagger = Swagger(self.app, template=template)
+        self.app = FastAPI(
+            title="Depo API",
+            description="API for legal deposition analysis",
+            version="1.0.0",
+        )
         self.depo_controller = DepoController()
+        self.configure_middleware()
         self.configure_routes()
-        self.configure_cors()
+        self.configure_openapi()
 
-    def configure_cors(self):
-        @self.app.after_request
-        def disable_cors(response):
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-            return response
+    def configure_middleware(self):
+        # Configure CORS
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    def configure_openapi(self):
+        def custom_openapi():
+            if self.app.openapi_schema:
+                return self.app.openapi_schema
+
+            openapi_schema = get_openapi(
+                title="Depo API",
+                version="1.0.0",
+                description="API for legal deposition analysis",
+                routes=self.app.routes,
+            )
+
+            # Customize the OpenAPI schema if needed
+            self.app.openapi_schema = openapi_schema
+            return self.app.openapi_schema
+
+        self.app.openapi = custom_openapi
 
     def configure_routes(self):
-        @self.app.route("/", methods=["GET"])
-        def home():
-            return jsonify({"message": "Welcome to the Python Project API!"})
+        @self.app.get("/", tags=["Root"])
+        async def home():
+            return {"message": "Welcome to the Python Project API!"}
 
-        @self.app.route("/depo/<string:depoiq_id>", methods=["GET"])
-        @swag_from("docs/get_depo_by_id.yml")
-        def get_depo_by_Id(depoiq_id):
+        @self.app.get("/depo/{depoiq_id}", tags=["Depo"])
+        async def get_depo_by_Id(
+            depoiq_id: str, category: Optional[SummaryCategoriesType] = None
+        ):
             try:
-                return self.depo_controller.get_depo_by_Id(depoiq_id)
+                categoryVal = category.value if category else None
+                return self.depo_controller.get_depo_by_Id(depoiq_id, categoryVal)
             except Exception as e:
                 cPrint(e, "🔹 Error in get_depo_by_Id:", "red")
-                return jsonify({"error": "Something went wrong in get_depo_by_Id", "details": str(e)}), 500
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "Something went wrong in get_depo_by_Id",
+                        "details": str(e),
+                    },
+                )
 
-        @self.app.route("/depo/add/<string:depoiq_id>", methods=["GET"])
-        @swag_from("docs/add_depo.yml")
-        def add_depo(depoiq_id):
+        @self.app.get("/depo/add/{depoiq_id}", tags=["Depo"])
+        async def add_depo(
+            depoiq_id: str, category: Optional[SummaryCategoriesType] = None
+        ):
             try:
-                return self.depo_controller.add_depo(depoiq_id)
+                categoryVal = category.value if category else None
+                return self.depo_controller.add_depo(depoiq_id, categoryVal)
             except Exception as e:
                 cPrint(e, "🔹 Error in add_depo:", "red")
-                return jsonify({"status": "error", "message": "Something went wrong in add_depo", "details": str(e)}), 500
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "status": "error",
+                        "message": "Something went wrong in add_depo",
+                        "details": str(e),
+                    },
+                )
 
-        @self.app.route("/depo/talk", methods=["POST"])
-        @swag_from("docs/talk_depo.yml")
-        def talk_depo():
+        @self.app.post("/depo/talk", tags=["Depo"])
+        async def talk_depo(request: TalkDepoRequest):
             try:
-                return self.depo_controller.talk_depo()
+                return self.depo_controller.talk_depo(request)
             except Exception as e:
-                return jsonify({"error": "Something went wrong in talk_summary", "details": str(e)}), 500
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "Something went wrong in talk_summary",
+                        "details": str(e),
+                    },
+                )
 
-        @self.app.route("/depo/answer_validator", methods=["POST"])
-        @swag_from("docs/answer_validator.yml")
-        def answer_validator():
+        @self.app.post("/depo/answer_validator", tags=["Depo"])
+        async def answer_validator(request: AnswerValidatorRequest):
             try:
-                return self.depo_controller.answer_validator()
+                return self.depo_controller.answer_validator(request)
             except Exception as e:
-                return jsonify({"error": "Something went wrong in answer_validator", "details": str(e)}), 500
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "Something went wrong in answer_validator",
+                        "details": str(e),
+                    },
+                )
 
-        @self.app.route("/depo/ask-ami-agent", methods=["POST"])
-        @swag_from("docs/ask_ami_agent.yml")
-        def ask_ami_agent():
+        @self.app.post("/depo/ask-ami-agent", tags=["Depo"])
+        async def ask_ami_agent(request: AskAmiAgentRequest):
             try:
-                return self.depo_controller.ask_ami_agent()
+                return self.depo_controller.ask_ami_agent(request)
             except Exception as e:
-                return jsonify({"error": "Something went wrong in ask_ami_agent", "details": str(e)}), 500
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "Something went wrong in ask_ami_agent",
+                        "details": str(e),
+                    },
+                )
 
     def run(self, **kwargs):
-        self.app.run(**kwargs)
+        import uvicorn
+
+        uvicorn.run(self.app, **kwargs)
 
 
 if __name__ == "__main__":
     api = DepoAPI()
-    api.run(debug=True)
+    api.run(host="0.0.0.0", port=8000)
