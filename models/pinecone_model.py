@@ -202,6 +202,11 @@ class PineConeModel:
     # Function to store transcript lines in Pinecone
     def store_transcript_lines_in_pinecone(self, depoiq_id, category, transcript_data):
         try:
+            # Validate transcript_data
+            if not transcript_data or not isinstance(transcript_data, list):
+                cPrint("Invalid transcript_data - expected list", "Error", "red")
+                return 0, []
+
             vectors_to_upsert = []
             skipped_chunks = []
             chunk_page_range = 5
@@ -211,18 +216,17 @@ class PineConeModel:
             for i in range(0, len(transcript_data), chunk_page_range):
                 grouped_pages = transcript_data[i : i + chunk_page_range]
 
+                # Validate grouped_pages
+                if not grouped_pages:
+                    continue
+
                 chunk_index = f"{grouped_pages[0]['pageNumber']}-{grouped_pages[-1]['pageNumber']}"
 
                 # check if already exists in pinecone
-                if self.check_existing_entry(
-                    depoiq_id,
-                    category,
-                    chunk_index,
-                ):
+                if self.check_existing_entry(depoiq_id, category, chunk_index):
                     skipped_chunks.append(
                         "Pages " + str(i + 1) + "-" + str(i + chunk_page_range)
                     )
-
                     cPrint(
                         f"⚠️ Transcript already exists for pages {i+1}-{i+chunk_page_range}, skipping...",
                         "Warning",
@@ -230,18 +234,20 @@ class PineConeModel:
                     )
                     continue
 
-                # Extract transcript lines, ensuring each line is properly formatted
-                raw_lines = [
-                    line["lineText"].strip()  # Ensure newline preservation
-                    for page in grouped_pages
-                    for line in page.get("lines", [])
-                    if line["lineText"].strip()  # Remove empty or whitespace-only lines
-                ]
+                # Extract transcript lines with validation
+                raw_lines = []
+                for page in grouped_pages:
+                    lines = page.get("lines", [])
+                    if not lines or not isinstance(lines, list):
+                        continue
+                    for line in lines:
+                        if not line or not isinstance(line, dict):
+                            continue
+                        line_text = line.get("lineText", "").strip()
+                        if line_text:
+                            raw_lines.append(line_text)
 
-                # Ensure text formatting is preserved for embeddings
-                trimmed_text = " ".join(
-                    raw_lines
-                ).strip()  # Preserve proper line structure
+                trimmed_text = " ".join(raw_lines).strip()
 
                 if not trimmed_text:
 
@@ -261,6 +267,11 @@ class PineConeModel:
                 keywords, synonyms_keywords = (
                     self.ai_client.extract_keywords_and_synonyms(trimmed_text)
                 )
+                if (
+                    not keywords or not synonyms_keywords
+                ):  # or whatever validation makes sense
+                    cPrint("Failed to extract keywords", "Warning", "yellow")
+                    continue
 
                 cPrint(
                     f"{trimmed_text} -> {keywords}",
@@ -270,10 +281,19 @@ class PineConeModel:
 
                 # Generate embedding
                 embedding_text = self.ai_client.generate_embedding(text=trimmed_text)
+                if not embedding_text:  # assuming embedding should be a list/array
+                    cPrint("Failed to generate embedding", "Warning", "yellow")
+                    continue
                 embedding_keywords = self.ai_client.generate_embedding(text=keywords)
+                if not embedding_keywords:
+                    cPrint("Failed to generate embedding", "Warning", "yellow")
+                    continue
                 embedding_synonyms_keywords = self.ai_client.generate_embedding(
                     text=synonyms_keywords
                 )
+                if not embedding_synonyms_keywords:
+                    cPrint("Failed to generate embedding", "Warning", "yellow")
+                    continue
 
                 created_at = datetime.now().isoformat()
 

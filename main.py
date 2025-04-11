@@ -66,7 +66,10 @@ class DepoAPI:
         ):
             try:
                 categoryVal = category.value if category else None
-                return self.depo_controller.get_depo_by_Id(depoiq_id, categoryVal)
+                response = await self.depo_controller.get_depo_by_Id(
+                    depoiq_id, categoryVal
+                )
+                return response
             except Exception as e:
                 cPrint(e, "🔹 Error in get_depo_by_Id:", "red")
                 raise HTTPException(
@@ -83,7 +86,8 @@ class DepoAPI:
         ):
             try:
                 categoryVal = category.value if category else None
-                return self.depo_controller.add_depo(depoiq_id, categoryVal)
+                response = self.depo_controller.add_depo(depoiq_id, categoryVal)
+                return response
             except Exception as e:
                 cPrint(e, "🔹 Error in add_depo:", "red")
                 raise HTTPException(
@@ -98,7 +102,8 @@ class DepoAPI:
         @self.app.post("/depo/talk", tags=["Depo"])
         async def talk_depo(request: TalkDepoRequest):
             try:
-                return self.depo_controller.talk_depo(request)
+                response = self.depo_controller.talk_depo(request)
+                return response
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
@@ -111,7 +116,8 @@ class DepoAPI:
         @self.app.post("/depo/answer_validator", tags=["Depo"])
         async def answer_validator(request: AnswerValidatorRequest):
             try:
-                return self.depo_controller.answer_validator(request)
+                response = self.depo_controller.answer_validator(request)
+                return response
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
@@ -124,7 +130,8 @@ class DepoAPI:
         @self.app.post("/depo/ask-ami-agent", tags=["Depo"])
         async def ask_ami_agent(request: AskAmiAgentRequest):
             try:
-                return self.depo_controller.ask_ami_agent(request)
+                response = self.depo_controller.ask_ami_agent(request)
+                return response
             except Exception as e:
                 raise HTTPException(
                     status_code=500,
