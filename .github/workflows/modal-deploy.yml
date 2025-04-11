@@ -25,10 +25,26 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          echo "$MODAL_TOKEN_ID and $MODAL_TOKEN_SECRET"
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install modal
+
+      - name: Check if Modal secrets are present
+        run: |
+          if [ -z "$MODAL_TOKEN_ID" ]; then
+            echo "❌ MODAL_TOKEN_ID is NOT set"
+          else
+            echo "✅ MODAL_TOKEN_ID is set"
+          fi
+
+          if [ -z "$MODAL_TOKEN_SECRET" ]; then
+            echo "❌ MODAL_TOKEN_SECRET is NOT set"
+          else
+            echo "✅ MODAL_TOKEN_SECRET is set"
+          fi
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
       - name: Configure Modal Authentication
         run: |
