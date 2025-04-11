@@ -25,6 +25,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          echo "$MODAL_TOKEN_ID and $MODAL_TOKEN_SECRET"
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install modal
@@ -32,12 +33,12 @@ jobs:
       - name: Configure Modal Authentication
         run: |
           echo "Configuring Modal authentication"
-          echo "$MODAL_TOKEN_ID"  and "$MODAL_TOKEN_SECRET""
+          echo "$MODAL_TOKEN_ID and $MODAL_TOKEN_SECRET"
           mkdir -p ~/.modal
           cat > ~/.modal/config.toml <<EOF
           [api_token]
-          token_id = "$MODAL_TOKEN_ID"
-          token_secret = "$MODAL_TOKEN_SECRET"
+          token_id = "${MODAL_TOKEN_ID}"
+          token_secret = "${MODAL_TOKEN_SECRET}"
           EOF
           echo "Modal authentication configured"
 
