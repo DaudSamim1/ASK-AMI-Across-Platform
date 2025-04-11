@@ -217,7 +217,3 @@ modal serve main_modal.py
 Once deployed, your API will be hosted serverlessly, and you can access it through the provided URL in the Modal dashboard.
 
 ---
-
-## 📜 License
-
-This project is licensed under the **MIT License**.
