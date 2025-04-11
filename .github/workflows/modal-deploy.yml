@@ -33,35 +33,28 @@ jobs:
         run: |
           if [ -z "$MODAL_TOKEN_ID" ]; then
             echo "❌ MODAL_TOKEN_ID is NOT set"
+            exit 1
           else
             echo "✅ MODAL_TOKEN_ID is set"
           fi
 
           if [ -z "$MODAL_TOKEN_SECRET" ]; then
             echo "❌ MODAL_TOKEN_SECRET is NOT set"
+            exit 1
           else
             echo "✅ MODAL_TOKEN_SECRET is set"
           fi
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
-      - name: Configure Modal Authentication
+      - name: Authenticate Modal
         run: |
-          echo "Configuring Modal authentication"
-          echo "$MODAL_TOKEN_ID and $MODAL_TOKEN_SECRET"
-          mkdir -p ~/.modal
-          cat > ~/.modal/config.toml <<EOF
-          [api_token]
-          token_id = "${MODAL_TOKEN_ID}"
-          token_secret = "${MODAL_TOKEN_SECRET}"
-          EOF
-          echo "Modal authentication configured"
+          echo "🔐 Setting Modal token"
+          modal token set --token-id "$MODAL_TOKEN_ID" --token-secret "$MODAL_TOKEN_SECRET"
+          echo "✅ Modal authentication complete"
 
       - name: Deploy to Modal
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             modal deploy --env ask-ami main_modal.py
-          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+          elif [[ "${GITHUB_REF}" == "refs/heads/dev" ]]; then
             modal deploy --env ask-ami-dev main_modal.py
           fi
