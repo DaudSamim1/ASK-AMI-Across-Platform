@@ -27,10 +27,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install modal  # Ensure modal is installed even if not in requirements.txt
+          pip install modal
 
-      - name: Authenticate with Modal
-        run: modal token set --token-id $MODAL_TOKEN_ID --token-secret $MODAL_TOKEN_SECRET
+      - name: Configure Modal Authentication
+        run: |
+          echo "Configuring Modal authentication"
+          echo "$MODAL_TOKEN_ID"  and "$MODAL_TOKEN_SECRET""
+          mkdir -p ~/.modal
+          cat > ~/.modal/config.toml <<EOF
+          [api_token]
+          token_id = "$MODAL_TOKEN_ID"
+          token_secret = "$MODAL_TOKEN_SECRET"
+          EOF
+          echo "Modal authentication configured"
 
       - name: Deploy to Modal
         run: |
